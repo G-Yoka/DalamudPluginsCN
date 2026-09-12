@@ -48,13 +48,31 @@
 
 收到撒娇罐提示后，新月罗盘会用方向和距离逐步缩小范围，在地图上绘制提示边界并列出剩余候选。错误输入可以撤销，也可以切换关注点或重置本轮。
 
-<p align="center">
-  <img src="images/treasure-hunt.png" width="629" alt="新月罗盘魔法罐寻宝">
-  <br>
-  <sub>提示范围、候选列表与当前关注点</sub>
-</p>
-
-候选点也可以在游戏画面中显示距离和高差；地图上的魔法罐预测会标明预计出现时间、剩余时间和数据来源。
+<table width="100%">
+  <tr>
+    <td colspan="2" align="center">
+      <img src="images/treasure-hunt.png" width="629" alt="新月罗盘魔法罐寻宝">
+      <br>
+      <sub>提示范围、候选列表与当前关注点</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="38%" align="center" valign="top">
+      <strong>场景候选</strong>
+      <br><br>
+      <img src="images/treasure-candidate-scene.png" width="166" alt="宝藏候选的距离与高差">
+      <br>
+      <sub>显示距离与高差</sub>
+    </td>
+    <td width="62%" align="center" valign="top">
+      <strong>魔法罐预测</strong>
+      <br><br>
+      <img src="images/magic-pot-forecast.png" width="338" alt="魔法罐预测时间与来源">
+      <br>
+      <sub>显示预计时间、剩余时间与数据来源</sub>
+    </td>
+  </tr>
+</table>
 
 ## FATE 与 CE
 
