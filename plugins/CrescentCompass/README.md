@@ -52,20 +52,21 @@
   <img src="images/treasure-hunt.png" width="760" alt="新月罗盘魔法罐寻宝">
 </p>
 
-<table>
-  <tr>
-    <td width="42%" align="center"><strong>场景候选</strong></td>
-    <td width="58%" align="center"><strong>魔法罐预测</strong></td>
-  </tr>
-  <tr>
-    <td align="center"><img src="images/treasure-candidate-scene.png" width="166" alt="宝藏候选的距离与高差"></td>
-    <td align="center"><img src="images/magic-pot-forecast.png" width="338" alt="魔法罐预测时间与来源"></td>
-  </tr>
-  <tr>
-    <td align="center">直接显示候选距离与高差</td>
-    <td align="center">显示预计出现时间、剩余时间和数据来源</td>
-  </tr>
-</table>
+### 场景候选
+
+在游戏画面中直接查看候选点的距离和高差。
+
+<p align="center">
+  <img src="images/treasure-candidate-scene.png" width="166" alt="宝藏候选的距离与高差">
+</p>
+
+### 魔法罐预测
+
+在地图上查看预计出现的魔法罐、出现时间、剩余时间和数据来源。
+
+<p align="center">
+  <img src="images/magic-pot-forecast.png" width="338" alt="魔法罐预测时间与来源">
+</p>
 
 ## FATE 与 CE
 
