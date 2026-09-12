@@ -18,10 +18,6 @@
   <a href="#导航与显示">导航与显示</a>
 </p>
 
-<p align="center">
-  <img src="images/treasure-hunt.png" width="760" alt="新月罗盘魔法罐寻宝">
-</p>
-
 ## 功能一览
 
 | 功能 | 可以做什么 |
@@ -51,6 +47,10 @@
 ## 魔法罐寻宝
 
 收到撒娇罐提示后，新月罗盘会用方向和距离逐步缩小范围，在地图上绘制提示边界并列出剩余候选。错误输入可以撤销，也可以切换关注点或重置本轮。
+
+<p align="center">
+  <img src="images/treasure-hunt.png" width="760" alt="新月罗盘魔法罐寻宝">
+</p>
 
 <table>
   <tr>
