@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/CrescentCompass.Core/CrescentCompass.Core.csproj" />
+  <Project Path="src/CrescentCompass/CrescentCompass.csproj" />
+</Solution>
