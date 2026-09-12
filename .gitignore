@@ -11,3 +11,10 @@ TestResults/
 *.nupkg
 *.snupkg
 *.log
+
+# Local development notes
+/BASELINE.md
+/DR_PARITY.md
+/PROJECT_PLAN.md
+/TESTING.md
+/UI_DESIGN_PLAN.md
