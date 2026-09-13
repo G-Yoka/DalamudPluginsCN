@@ -22,10 +22,12 @@ public sealed class WatchedEventNotificationService : IDisposable
     private readonly IClientState clientState;
     private readonly IObjectTable objectTable;
     private readonly IFramework framework;
+    private readonly IDataManager dataManager;
     private readonly INotificationManager notificationManager;
     private readonly OccultEventTracker eventTracker;
     private readonly NavigationService navigationService;
     private readonly IPluginLog log;
+    private readonly Action save;
     private readonly EventAppearanceLedger appearances = new();
     private readonly Dictionary<EventAppearanceKey, OccultEventSnapshot> pending = [];
     private readonly CancellationTokenSource disposalCancellation = new();
@@ -37,17 +39,20 @@ public sealed class WatchedEventNotificationService : IDisposable
     private bool disposed;
 
     public WatchedEventNotificationService(PluginConfiguration configuration, IClientState clientState,
-        IObjectTable objectTable, IFramework framework, INotificationManager notificationManager,
-        OccultEventTracker eventTracker, NavigationService navigationService, IPluginLog log)
+        IObjectTable objectTable, IFramework framework, IDataManager dataManager,
+        INotificationManager notificationManager, OccultEventTracker eventTracker,
+        NavigationService navigationService, IPluginLog log, Action save)
     {
         this.configuration = configuration;
         this.clientState = clientState;
         this.objectTable = objectTable;
         this.framework = framework;
+        this.dataManager = dataManager;
         this.notificationManager = notificationManager;
         this.eventTracker = eventTracker;
         this.navigationService = navigationService;
         this.log = log;
+        this.save = save;
         framework.Update += OnFrameworkUpdate;
     }
 
@@ -74,7 +79,8 @@ public sealed class WatchedEventNotificationService : IDisposable
         var now = Environment.TickCount64;
         var elapsed = Math.Clamp(now - banner.LastDrawAt, 0, 100);
         banner.LastDrawAt = now;
-        if (!banner.WasHovered) banner.RemainingMilliseconds -= elapsed;
+        if (!configuration.PauseProminentBannerOnHover || !banner.WasHovered)
+            banner.RemainingMilliseconds -= elapsed;
         if (banner.RemainingMilliseconds <= 0)
         {
             prominentBanner = null;
@@ -83,31 +89,44 @@ public sealed class WatchedEventNotificationService : IDisposable
 
         var scale = ImGuiHelpers.GlobalScale;
         var viewport = ImGui.GetMainViewport();
-        var width = MathF.Min(620f * scale, viewport.WorkSize.X - 32f * scale);
-        var height = (68f + banner.Events.Count * 48f) * scale;
-        ImGui.SetNextWindowPos(new Vector2(viewport.WorkPos.X + viewport.WorkSize.X / 2f,
-            viewport.WorkPos.Y + 28f * scale), ImGuiCond.Always, new Vector2(0.5f, 0f));
-        ImGui.SetNextWindowSize(new Vector2(width, height), ImGuiCond.Always);
+        var width = MathF.Min(configuration.ProminentBannerWidth * scale, viewport.WorkSize.X - 32f * scale);
+        var estimatedRowHeight = configuration.ProminentBannerDetail switch
+        {
+            EventBannerDetail.Compact => 68f,
+            EventBannerDetail.Detailed => 128f,
+            _ => 90f
+        };
+        var estimatedHeight = (58f + banner.Events.Count * estimatedRowHeight +
+                               Math.Max(0, banner.Events.Count - 1) * 7f) * scale;
+        var layoutHeight = banner.LastHeight > 0f ? banner.LastHeight : estimatedHeight;
+        var (position, pivot) = BannerPlacement(viewport, scale, width, layoutHeight);
+        ImGui.SetNextWindowPos(position,
+            configuration.ProminentBannerPosition == EventBannerPosition.Custom ? ImGuiCond.Appearing : ImGuiCond.Always,
+            pivot);
+        ImGui.SetNextWindowSizeConstraints(new Vector2(width, 0f), new Vector2(width, float.MaxValue));
 
-        var age = 8_000 - banner.RemainingMilliseconds;
+        var age = banner.DurationMilliseconds - banner.RemainingMilliseconds;
         var pulse = !configuration.ReduceMotion && age < 1_000
             ? 0.82f + 0.18f * MathF.Abs(MathF.Sin(age / 1_000f * MathF.Tau * 2f))
             : 1f;
         var accent = banner.Events.Any(item => item.Kind == OccultEventKind.CriticalEngagement)
             ? new Vector4(1.00f, 0.78f, 0.22f, pulse)
             : new Vector4(0.20f, 0.82f, 0.96f, pulse);
-        ImGui.PushStyleColor(ImGuiCol.WindowBg, new Vector4(0.055f, 0.075f, 0.11f, 0.97f));
+        ImGui.PushStyleColor(ImGuiCol.WindowBg,
+            new Vector4(0.055f, 0.075f, 0.11f, configuration.ProminentBannerOpacity));
         ImGui.PushStyleColor(ImGuiCol.Border, accent);
         ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(accent.X, accent.Y, accent.Z, 0.30f));
         ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, 2f * scale);
         ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, 8f * scale);
         ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(14f, 10f) * scale);
         var flags = ImGuiWindowFlags.NoDecoration | ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoSavedSettings |
-                    ImGuiWindowFlags.NoNav | ImGuiWindowFlags.NoFocusOnAppearing;
+                    ImGuiWindowFlags.NoNav | ImGuiWindowFlags.NoFocusOnAppearing | ImGuiWindowFlags.AlwaysAutoResize;
+        if (configuration.ProminentBannerPosition == EventBannerPosition.Custom)
+            flags &= ~ImGuiWindowFlags.NoMove;
         if (ImGui.Begin("###CrescentCompass-ProminentEventAlert", flags))
         {
             ImGui.TextColored(accent, banner.Events.Count == 1
-                ? "收藏事件已出现"
+                ? $"收藏 {KindName(banner.Events[0])} 已出现"
                 : $"{banner.Events.Count} 个收藏事件已出现");
             ImGui.SameLine();
             ImGui.SetCursorPosX(ImGui.GetWindowWidth() - 34f * scale);
@@ -117,26 +136,220 @@ public sealed class WatchedEventNotificationService : IDisposable
             foreach (var item in banner.Events)
             {
                 ImGui.PushID(unchecked((int)item.DataId) ^ (item.Kind == OccultEventKind.CriticalEngagement ? 0x40000000 : 0));
-                var reward = string.IsNullOrEmpty(item.RewardTag) ? string.Empty : $" {item.RewardTag}";
-                if (ImGui.Selectable($"{KindName(item)} · {item.Name}{reward}##navigate", false,
-                        ImGuiSelectableFlags.None, new Vector2(-1f, 0f)))
-                {
-                    navigationService.NavigateToEvent(item.Position, $"{KindName(item)}：{item.Name}");
-                    prominentBanner = null;
-                }
-                var distance = objectTable.LocalPlayer is { } player
-                    ? $" · {MathF.Sqrt(Vector3.DistanceSquared(player.Position, item.Position)):F0}m"
-                    : string.Empty;
-                ImGui.TextDisabled($"{item.StateText}{distance}");
+                DrawBannerEvent(item);
                 ImGui.PopID();
+                if (!item.Equals(banner.Events[^1])) ImGui.Separator();
             }
 
             banner.WasHovered = ImGui.IsWindowHovered(ImGuiHoveredFlags.AllowWhenBlockedByActiveItem);
+            banner.LastHeight = ImGui.GetWindowHeight();
+            if (configuration.ProminentBannerPosition == EventBannerPosition.Custom &&
+                banner.WasHovered && ImGui.IsMouseReleased(ImGuiMouseButton.Left))
+            {
+                var windowPosition = ImGui.GetWindowPos();
+                configuration.ProminentBannerCustomX = Math.Clamp(
+                    (windowPosition.X - viewport.WorkPos.X) / Math.Max(1f, viewport.WorkSize.X - width), 0f, 1f);
+                configuration.ProminentBannerCustomY = Math.Clamp(
+                    (windowPosition.Y - viewport.WorkPos.Y) /
+                    Math.Max(1f, viewport.WorkSize.Y - banner.LastHeight), 0f, 1f);
+                save();
+            }
         }
         ImGui.End();
         ImGui.PopStyleVar(3);
         ImGui.PopStyleColor(3);
     }
+
+    public void ShowPreview()
+    {
+        var origin = objectTable.LocalPlayer?.Position ?? Vector3.Zero;
+        prominentBanner = new ProminentBanner(
+        [
+            new OccultEventSnapshot(35, "愤怒的人造人——新月狂战士", origin + new Vector3(112f, 1f, 46f), 0,
+                OccultEventKind.CriticalEngagement, "报名中 · 剩余 01:46", "[青]", true),
+            new OccultEventSnapshot(1971, "骄傲的咒杀者——执行者", origin + new Vector3(168f, 3f, 72f), 0,
+                OccultEventKind.Fate, "进度 12% · 剩余 19:12", "[黄]", true)
+        ], BannerDurationMilliseconds());
+    }
+
+    private void DrawBannerEvent(OccultEventSnapshot item)
+    {
+        var kind = KindName(item);
+        var name = ResolveName(item);
+        if (!configuration.ShowProminentBannerNavigateButton)
+        {
+            DrawBannerEventContent(item, kind, name);
+            return;
+        }
+
+        if (!ImGui.BeginTable("###banner-event-layout", 2, ImGuiTableFlags.SizingStretchProp)) return;
+        ImGui.TableSetupColumn("内容", ImGuiTableColumnFlags.WidthStretch);
+        ImGui.TableSetupColumn("操作", ImGuiTableColumnFlags.WidthFixed, 54f * ImGuiHelpers.GlobalScale);
+        ImGui.TableNextRow();
+        ImGui.TableSetColumnIndex(0);
+        var contentTop = ImGui.GetCursorPosY();
+        DrawBannerEventContent(item, kind, name);
+        var contentBottom = ImGui.GetCursorPosY();
+
+        ImGui.TableSetColumnIndex(1);
+        var buttonHeight = ImGui.GetFrameHeight();
+        ImGui.SetCursorPosY(contentTop + MathF.Max(0f, (contentBottom - contentTop - buttonHeight) / 2f));
+        if (ImGui.SmallButton("前往##banner-navigate"))
+        {
+            navigationService.NavigateToEvent(item.Position, $"{kind}：{name}");
+            prominentBanner = null;
+        }
+        ImGui.EndTable();
+    }
+
+    private void DrawBannerEventContent(OccultEventSnapshot item, string kind, string name)
+    {
+        var lineStart = ImGui.GetCursorPosX();
+        ImGui.TextColored(item.Kind == OccultEventKind.CriticalEngagement
+            ? new Vector4(1f, 0.78f, 0.22f, 1f)
+            : new Vector4(0.20f, 0.82f, 0.96f, 1f), kind);
+        ImGui.SameLine(0f, 0f);
+        ImGui.SetCursorPosX(lineStart + 42f * ImGuiHelpers.GlobalScale);
+        ImGui.TextUnformatted(name);
+        DrawRewardTags(item);
+
+        ImGui.TextDisabled(item.StateText);
+        if (configuration.ProminentBannerDetail >= EventBannerDetail.Standard)
+            DrawBannerLocation(item);
+        if (configuration.ProminentBannerDetail == EventBannerDetail.Detailed)
+            DrawBannerDetails(item);
+    }
+
+    private void DrawRewardTags(OccultEventSnapshot item)
+    {
+        if (!string.IsNullOrWhiteSpace(item.RewardTag))
+        {
+            ImGui.SameLine(0f, 5f * ImGuiHelpers.GlobalScale);
+            ImGui.TextColored(RewardTagColor(item.RewardTag), item.RewardTag);
+        }
+        if (!OccultEventRewardCatalog.TryGetSoulShard(EventTerritory(item), item.DataId, out var soulShard)) return;
+        ImGui.SameLine(0f, 5f * ImGuiHelpers.GlobalScale);
+        ImGui.TextColored(SoulShardTagColor(soulShard.Tag), soulShard.Tag);
+        if (!ImGui.IsItemHovered()) return;
+        ImGui.BeginTooltip();
+        ImGui.TextUnformatted($"灵魂碎晶：{soulShard.JobName}");
+        ImGui.EndTooltip();
+    }
+
+    private void DrawBannerLocation(OccultEventSnapshot item)
+    {
+        var parts = new List<string>();
+        if (TryWorldToMap(item.Position, out var mapPosition))
+            parts.Add($"X:{mapPosition.X:F1} Y:{mapPosition.Y:F1}");
+        if (objectTable.LocalPlayer is { } player)
+        {
+            var dx = player.Position.X - item.Position.X;
+            var dz = player.Position.Z - item.Position.Z;
+            parts.Add($"距离 {MathF.Sqrt(dx * dx + dz * dz):F0}m");
+            var height = item.Position.Y - player.Position.Y;
+            parts.Add($"高差 {height:+0;-0;0}m");
+        }
+        if (parts.Count > 0) ImGui.TextDisabled(string.Join(" · ", parts));
+    }
+
+    private void DrawBannerDetails(OccultEventSnapshot item)
+    {
+        ImGui.TextDisabled($"事件 ID {item.DataId}");
+        if (item.Kind != OccultEventKind.CriticalEngagement) return;
+        var eventTerritory = EventTerritory(item);
+        var definition = CeSpawnCatalog.All.FirstOrDefault(entry =>
+            entry.Id == item.DataId && entry.TerritoryId == eventTerritory);
+        if (definition == null) return;
+        if (definition.MobNameId == 0)
+        {
+            ImGui.TextDisabled("触发：自动出现");
+            return;
+        }
+        var mobName = dataManager.GetExcelSheet<Lumina.Excel.Sheets.BNpcName>()
+            .GetRowOrDefault(definition.MobNameId)?.Singular.ToString();
+        if (string.IsNullOrWhiteSpace(mobName)) mobName = definition.MobFallback;
+        var acceleration = definition.CanSpawnNaturally ? " · 可自然出现／击杀可加速" : string.Empty;
+        ImGui.TextDisabled($"触发：{mobName} (Lv.{definition.Level}){acceleration}");
+    }
+
+    private string ResolveName(OccultEventSnapshot item)
+    {
+        if (!string.IsNullOrWhiteSpace(item.Name)) return item.Name;
+        if (item.Kind == OccultEventKind.CriticalEngagement)
+        {
+            var localized = dataManager.GetExcelSheet<Lumina.Excel.Sheets.DynamicEvent>()
+                .GetRowOrDefault(item.DataId)?.Name.ToString();
+            if (!string.IsNullOrWhiteSpace(localized)) return localized;
+            return CeSpawnCatalog.All.FirstOrDefault(entry => entry.Id == item.DataId)?.EnglishName ?? $"CE #{item.DataId}";
+        }
+        var fateName = dataManager.GetExcelSheet<Lumina.Excel.Sheets.Fate>()
+            .GetRowOrDefault(item.DataId)?.Name.ToString();
+        if (!string.IsNullOrWhiteSpace(fateName)) return fateName;
+        return FateCatalog.All.FirstOrDefault(entry => entry.Id == item.DataId)?.EnglishName ?? $"FATE #{item.DataId}";
+    }
+
+    private uint EventTerritory(OccultEventSnapshot item)
+    {
+        if (territoryId != 0) return territoryId;
+        if (item.Kind == OccultEventKind.CriticalEngagement)
+            return CeSpawnCatalog.All.FirstOrDefault(entry => entry.Id == item.DataId)?.TerritoryId ?? 0;
+        return FateCatalog.All.FirstOrDefault(entry => entry.Id == item.DataId)?.TerritoryId ?? 0;
+    }
+
+    private bool TryWorldToMap(Vector3 position, out Vector2 mapPosition)
+    {
+        mapPosition = default;
+        var map = dataManager.GetExcelSheet<Lumina.Excel.Sheets.Map>().GetRowOrDefault(clientState.MapId);
+        if (map is not { } row || row.SizeFactor == 0) return false;
+        var scale = row.SizeFactor / 100f;
+        var texture = (new Vector2(position.X, position.Z) + new Vector2(row.OffsetX, row.OffsetY)) * scale
+                      + new Vector2(1024f);
+        mapPosition = texture / 2048f * 40.96f / scale + Vector2.One;
+        return float.IsFinite(mapPosition.X) && float.IsFinite(mapPosition.Y);
+    }
+
+    private (Vector2 Position, Vector2 Pivot) BannerPlacement(
+        ImGuiViewportPtr viewport, float scale, float width, float height)
+    {
+        const float margin = 28f;
+        return configuration.ProminentBannerPosition switch
+        {
+            EventBannerPosition.TopLeft =>
+                (viewport.WorkPos + new Vector2(16f * scale, margin * scale), Vector2.Zero),
+            EventBannerPosition.TopRight =>
+                (viewport.WorkPos + new Vector2(viewport.WorkSize.X - 16f * scale, margin * scale), new Vector2(1f, 0f)),
+            EventBannerPosition.Custom =>
+                (viewport.WorkPos + new Vector2(
+                    configuration.ProminentBannerCustomX * Math.Max(1f, viewport.WorkSize.X - width),
+                    configuration.ProminentBannerCustomY * Math.Max(1f, viewport.WorkSize.Y - height)), Vector2.Zero),
+            _ =>
+                (viewport.WorkPos + new Vector2(viewport.WorkSize.X / 2f, margin * scale), new Vector2(0.5f, 0f))
+        };
+    }
+
+    private long BannerDurationMilliseconds() =>
+        (long)MathF.Round(configuration.ProminentBannerDurationSeconds * 1_000f);
+
+    private static Vector4 RewardTagColor(string tag) => tag switch
+    {
+        "[黄]" => new(0.96f, 0.83f, 0.37f, 1f),
+        "[青]" => new(0.35f, 0.84f, 0.90f, 1f),
+        "[碧]" => new(0.34f, 0.82f, 0.68f, 1f),
+        "[绿]" => new(0.46f, 0.85f, 0.35f, 1f),
+        "[橙]" => new(0.95f, 0.52f, 0.25f, 1f),
+        "[紫]" => new(0.75f, 0.48f, 0.92f, 1f),
+        _ => new(0.85f, 0.89f, 0.94f, 1f)
+    };
+
+    private static Vector4 SoulShardTagColor(string tag) => tag switch
+    {
+        "[游]" => new(0.42f, 0.82f, 0.50f, 1f),
+        "[狂]" => new(0.94f, 0.40f, 0.30f, 1f),
+        "[预]" => new(0.48f, 0.76f, 1.00f, 1f),
+        "[死]" => new(0.72f, 0.48f, 0.90f, 1f),
+        "[青魔]" => new(0.32f, 0.66f, 0.96f, 1f),
+        _ => new(0.85f, 0.89f, 0.94f, 1f)
+    };
 
     private void OnFrameworkUpdate(IFramework _)
     {
@@ -197,7 +410,15 @@ public sealed class WatchedEventNotificationService : IDisposable
     {
         flushAt = 0;
         if (pending.Count == 0) return;
-        var events = pending.Values.ToArray();
+        var activeEvents = eventTracker.ActiveEvents;
+        var events = pending.Values
+            .Select(item =>
+            {
+                var latest = activeEvents.FirstOrDefault(active => Key(active) == Key(item));
+                return latest.DataId != 0 ? latest : item;
+            })
+            .Select(item => item with { Name = ResolveName(item) })
+            .ToArray();
         pending.Clear();
         var target = Nearest(events);
         var title = events.Length == 1 ? "收藏事件已出现" : $"{events.Length} 个收藏事件已出现";
@@ -208,7 +429,8 @@ public sealed class WatchedEventNotificationService : IDisposable
         {
             ShowInGame(title, content, target);
             if (configuration.ShowProminentInGameEventNotifications)
-                prominentBanner = new ProminentBanner(events.OrderBy(DistanceSquared).ToArray());
+                prominentBanner = new ProminentBanner(events.OrderBy(DistanceSquared).ToArray(),
+                    BannerDurationMilliseconds());
         }
         else if (configuration.ShowWindowsEventNotifications && TryShowWindows(title, content)) { }
         else ShowInGame(title, content, target);
@@ -333,15 +555,19 @@ public sealed class WatchedEventNotificationService : IDisposable
 
     private sealed class ProminentBanner
     {
-        public ProminentBanner(IReadOnlyList<OccultEventSnapshot> events)
+        public ProminentBanner(IReadOnlyList<OccultEventSnapshot> events, long durationMilliseconds)
         {
             Events = events;
             LastDrawAt = Environment.TickCount64;
+            DurationMilliseconds = durationMilliseconds;
+            RemainingMilliseconds = durationMilliseconds;
         }
 
         public IReadOnlyList<OccultEventSnapshot> Events { get; }
-        public long RemainingMilliseconds { get; set; } = 8_000;
+        public long DurationMilliseconds { get; }
+        public long RemainingMilliseconds { get; set; }
         public long LastDrawAt { get; set; }
         public bool WasHovered { get; set; }
+        public float LastHeight { get; set; }
     }
 }

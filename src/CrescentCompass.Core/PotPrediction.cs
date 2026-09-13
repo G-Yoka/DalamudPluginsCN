@@ -118,6 +118,18 @@ public sealed class PotPredictionSession
         Recalculate();
     }
 
+    public bool UpdateCandidatePosition(uint candidateId, Vector3 position)
+    {
+        if (candidateId == 0 || !IsFinite(position)) return false;
+        var index = universe.FindIndex(candidate => candidate.Id == candidateId);
+        if (index < 0) return false;
+        universe[index] = universe[index] with { Position = position };
+        var candidateIndex = candidates.FindIndex(candidate => candidate.Id == candidateId);
+        if (candidateIndex >= 0)
+            candidates[candidateIndex] = candidates[candidateIndex] with { Position = position };
+        return true;
+    }
+
     public PotHintApplyResult TryApply(
         string message,
         Vector3 origin,
@@ -286,4 +298,3 @@ public sealed class PotPredictionSession
         return value is "很近" or "不远" or "稍远" or "很远";
     }
 }
-

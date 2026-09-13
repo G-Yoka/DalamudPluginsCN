@@ -5,7 +5,7 @@ namespace CrescentCompass.Configuration;
 [Serializable]
 public sealed class PluginConfiguration : IPluginConfiguration
 {
-    public int Version { get; set; } = 8;
+    public int Version { get; set; } = 10;
     public bool ShowMainWindow { get; set; } = true;
     public bool ShowOverlay { get; set; } = true;
     public bool ShowCandidateIndicators { get; set; } = true;
@@ -66,8 +66,19 @@ public sealed class PluginConfiguration : IPluginConfiguration
     public bool WatchedCeSound { get; set; } = true;
     public bool ShowWindowsEventNotifications { get; set; } = true;
     public bool ShowProminentInGameEventNotifications { get; set; } = true;
+    public EventBannerPosition ProminentBannerPosition { get; set; } = EventBannerPosition.TopCenter;
+    public EventBannerDetail ProminentBannerDetail { get; set; } = EventBannerDetail.Standard;
+    public float ProminentBannerDurationSeconds { get; set; } = 8f;
+    public float ProminentBannerWidth { get; set; } = 620f;
+    public float ProminentBannerOpacity { get; set; } = 0.6f;
+    public float ProminentBannerCustomX { get; set; } = 0.5f;
+    public float ProminentBannerCustomY { get; set; } = 0.04f;
+    public bool PauseProminentBannerOnHover { get; set; } = true;
+    public bool ShowProminentBannerNavigateButton { get; set; } = true;
     public bool NotifyCeOnEntry { get; set; } = true;
     public List<ConfirmedFieldTreasureRecord> ConfirmedFieldTreasures { get; set; } = [];
+    public bool AutoCalibratePotCandidates { get; set; } = true;
+    public List<PotCandidateCalibrationRecord> PotCandidateCalibrations { get; set; } = [];
     public void Normalize()
     {
         if (Version < 3)
@@ -91,7 +102,25 @@ public sealed class PluginConfiguration : IPluginConfiguration
             ShowConfirmedFieldTreasureMapMarkers = true;
             Version = 8;
         }
-        Version = Math.Max(8, Version);
+        if (Version < 9)
+        {
+            ProminentBannerPosition = EventBannerPosition.TopCenter;
+            ProminentBannerDetail = EventBannerDetail.Standard;
+            ProminentBannerDurationSeconds = 8f;
+            ProminentBannerWidth = 620f;
+            ProminentBannerOpacity = 0.6f;
+            ProminentBannerCustomX = 0.5f;
+            ProminentBannerCustomY = 0.04f;
+            PauseProminentBannerOnHover = true;
+            ShowProminentBannerNavigateButton = true;
+            Version = 9;
+        }
+        if (Version < 10)
+        {
+            AutoCalibratePotCandidates = true;
+            Version = 10;
+        }
+        Version = Math.Max(10, Version);
         DirectNavigationDistance = Math.Clamp(DirectNavigationDistance, 0f, 300f);
         MinimumTeleportSavingSeconds = Math.Clamp(MinimumTeleportSavingSeconds, 0f, 60f);
         AverageDemiReturnSeconds = Math.Clamp(AverageDemiReturnSeconds, 1f, 35f);
@@ -125,10 +154,47 @@ public sealed class PluginConfiguration : IPluginConfiguration
         ConfirmedFieldTreasureIconScale = Math.Clamp(ConfirmedFieldTreasureIconScale, 0.5f, 3f);
         PartyMemberIconScale = Math.Clamp(PartyMemberIconScale, 0.5f, 3f);
         MapIconHoverScale = Math.Clamp(MapIconHoverScale, 1f, 2.5f);
+        ProminentBannerDurationSeconds = Math.Clamp(ProminentBannerDurationSeconds, 3f, 30f);
+        ProminentBannerWidth = Math.Clamp(ProminentBannerWidth, 420f, 900f);
+        ProminentBannerOpacity = Math.Clamp(ProminentBannerOpacity, 0.5f, 1f);
+        ProminentBannerCustomX = Math.Clamp(ProminentBannerCustomX, 0f, 1f);
+        ProminentBannerCustomY = Math.Clamp(ProminentBannerCustomY, 0f, 1f);
+        if (!Enum.IsDefined(ProminentBannerPosition)) ProminentBannerPosition = EventBannerPosition.TopCenter;
+        if (!Enum.IsDefined(ProminentBannerDetail)) ProminentBannerDetail = EventBannerDetail.Standard;
         WatchedCeIds ??= [];
         WatchedFateIds ??= [];
         ConfirmedFieldTreasures ??= [];
+        PotCandidateCalibrations ??= [];
+        PotCandidateCalibrations.RemoveAll(item =>
+            item.CandidateId == 0 || item.SampleCount <= 0 ||
+            !float.IsFinite(item.X) || !float.IsFinite(item.Y) || !float.IsFinite(item.Z));
     }
+}
+
+[Serializable]
+public sealed class PotCandidateCalibrationRecord
+{
+    public uint TerritoryId { get; set; }
+    public uint CandidateId { get; set; }
+    public float X { get; set; }
+    public float Y { get; set; }
+    public float Z { get; set; }
+    public int SampleCount { get; set; }
+}
+
+public enum EventBannerPosition
+{
+    TopCenter,
+    TopLeft,
+    TopRight,
+    Custom
+}
+
+public enum EventBannerDetail
+{
+    Compact,
+    Standard,
+    Detailed
 }
 
 [Serializable]

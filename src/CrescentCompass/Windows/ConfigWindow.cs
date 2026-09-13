@@ -17,12 +17,15 @@ public sealed class ConfigWindow : Window
     private readonly Action applyDetailsVisibility;
     private readonly IDalamudPluginInterface pluginInterface;
     private readonly NavigationService navigationService;
+    private readonly TreasureTracker treasureTracker;
+    private readonly Action previewProminentBanner;
     private string search = string.Empty;
     private int selectedPage;
 
     public ConfigWindow(PluginConfiguration configuration, Action save,
         Action applyOverlayVisibility, Action applyDetailsVisibility,
-        IDalamudPluginInterface pluginInterface, NavigationService navigationService)
+        IDalamudPluginInterface pluginInterface, NavigationService navigationService,
+        TreasureTracker treasureTracker, Action previewProminentBanner)
         : base("新月罗盘设置###CrescentCompass-Config")
     {
         this.configuration = configuration;
@@ -31,6 +34,8 @@ public sealed class ConfigWindow : Window
         this.applyDetailsVisibility = applyDetailsVisibility;
         this.pluginInterface = pluginInterface;
         this.navigationService = navigationService;
+        this.treasureTracker = treasureTracker;
+        this.previewProminentBanner = previewProminentBanner;
         SizeConstraints = new WindowSizeConstraints
         {
             MinimumSize = new(620f, 430f),
@@ -186,19 +191,99 @@ public sealed class ConfigWindow : Window
     {
         DrawBoolean("显示地图", configuration.ShowMap, value => configuration.ShowMap = value);
         DrawBoolean("暂停寻宝处理", configuration.Paused, value => configuration.Paused = value);
+        UiTheme.SectionTitle("候选点校准");
+        DrawBoolean("自动校准魔法罐候选点", configuration.AutoCalibratePotCandidates,
+            value => configuration.AutoCalibratePotCandidates = value);
+        ImGui.TextDisabled($"已校准 {treasureTracker.CandidateCalibrationCount} 个候选点。只有匹配明确时才会保存。");
+        ImGui.TextDisabled(treasureTracker.CandidateCalibrationStatus);
+        if (treasureTracker.CandidateCalibrationCount == 0) ImGui.BeginDisabled();
+        if (ImGui.Button("复制校准记录"))
+            ImGui.SetClipboardText(treasureTracker.ExportCandidateCalibrations());
+        ImGui.SameLine();
+        if (ImGui.Button("清除校准记录")) treasureTracker.ResetCandidateCalibrations();
+        if (treasureTracker.CandidateCalibrationCount == 0) ImGui.EndDisabled();
     }
 
     private void DrawEvents()
     {
         DrawBoolean("收藏的 CE／FATE 出现时提醒", configuration.NotifyWatchedCe, value => configuration.NotifyWatchedCe = value);
-        DrawBoolean("显示醒目的游戏内横幅", configuration.ShowProminentInGameEventNotifications,
-            value => configuration.ShowProminentInGameEventNotifications = value);
         DrawBoolean("游戏失焦时使用 Windows 横幅", configuration.ShowWindowsEventNotifications,
             value => configuration.ShowWindowsEventNotifications = value);
         DrawBoolean("提醒时播放短提示音", configuration.WatchedCeSound, value => configuration.WatchedCeSound = value);
         DrawBoolean("进入新实例时提醒已出现的收藏事件", configuration.NotifyCeOnEntry, value => configuration.NotifyCeOnEntry = value);
         ImGui.Spacing();
         ImGui.TextDisabled($"当前已关注 {configuration.WatchedCeIds.Count} 个 CE、{configuration.WatchedFateIds.Count} 个 FATE。收藏列表可在对应速查窗口管理。");
+
+        UiTheme.SectionTitle("醒目横幅");
+        DrawBoolean("显示醒目的游戏内横幅", configuration.ShowProminentInGameEventNotifications,
+            value => configuration.ShowProminentInGameEventNotifications = value);
+        if (!configuration.ShowProminentInGameEventNotifications) ImGui.BeginDisabled();
+        DrawBannerPosition();
+        DrawBannerDetail();
+        SliderFloat("显示时长", configuration.ProminentBannerDurationSeconds,
+            value => configuration.ProminentBannerDurationSeconds = value, 3f, 30f, "%.0f秒");
+        SliderFloat("横幅宽度", configuration.ProminentBannerWidth,
+            value => configuration.ProminentBannerWidth = value, 420f, 900f, "%.0fpx");
+        SliderPercent("横幅透明度", configuration.ProminentBannerOpacity,
+            value => configuration.ProminentBannerOpacity = value, 50, 100);
+        DrawBoolean("鼠标悬停时暂停计时", configuration.PauseProminentBannerOnHover,
+            value => configuration.PauseProminentBannerOnHover = value);
+        DrawBoolean("显示“前往”按钮", configuration.ShowProminentBannerNavigateButton,
+            value => configuration.ShowProminentBannerNavigateButton = value);
+        if (configuration.ProminentBannerPosition == EventBannerPosition.Custom)
+            ImGui.TextDisabled("横幅出现后可直接拖动；松开鼠标时保存位置。");
+        if (ImGui.Button("测试横幅")) previewProminentBanner();
+        ImGui.SameLine();
+        if (ImGui.Button("恢复横幅默认设置"))
+        {
+            configuration.ProminentBannerPosition = EventBannerPosition.TopCenter;
+            configuration.ProminentBannerDetail = EventBannerDetail.Standard;
+            configuration.ProminentBannerDurationSeconds = 8f;
+            configuration.ProminentBannerWidth = 620f;
+            configuration.ProminentBannerOpacity = 0.6f;
+            configuration.ProminentBannerCustomX = 0.5f;
+            configuration.ProminentBannerCustomY = 0.04f;
+            configuration.PauseProminentBannerOnHover = true;
+            configuration.ShowProminentBannerNavigateButton = true;
+            save();
+        }
+        if (!configuration.ShowProminentInGameEventNotifications) ImGui.EndDisabled();
+    }
+
+    private void DrawBannerPosition()
+    {
+        var labels = new[] { "顶部居中", "左上角", "右上角", "自定义位置" };
+        var current = (int)configuration.ProminentBannerPosition;
+        ImGui.SetNextItemWidth(300f);
+        if (!ImGui.BeginCombo("横幅位置", labels[current])) return;
+        for (var index = 0; index < labels.Length; index++)
+        {
+            if (ImGui.Selectable(labels[index], current == index))
+            {
+                configuration.ProminentBannerPosition = (EventBannerPosition)index;
+                save();
+            }
+            if (current == index) ImGui.SetItemDefaultFocus();
+        }
+        ImGui.EndCombo();
+    }
+
+    private void DrawBannerDetail()
+    {
+        var labels = new[] { "简洁", "标准", "详细" };
+        var current = (int)configuration.ProminentBannerDetail;
+        ImGui.SetNextItemWidth(300f);
+        if (!ImGui.BeginCombo("内容详细程度", labels[current])) return;
+        for (var index = 0; index < labels.Length; index++)
+        {
+            if (ImGui.Selectable(labels[index], current == index))
+            {
+                configuration.ProminentBannerDetail = (EventBannerDetail)index;
+                save();
+            }
+            if (current == index) ImGui.SetItemDefaultFocus();
+        }
+        ImGui.EndCombo();
     }
 
     private void DrawNavigation()
@@ -231,7 +316,6 @@ public sealed class ConfigWindow : Window
         DrawBoolean("显示警戒调试信息", configuration.ShowAggroDebug, value => configuration.ShowAggroDebug = value);
         DrawBoolean("自动校准警戒范围", configuration.AutoCalibrateAggroRanges, value => configuration.AutoCalibrateAggroRanges = value);
         UiTheme.SectionTitle("配置");
-        ImGui.TextDisabled($"配置版本 {configuration.Version}");
     }
 
     private void DrawVnavmeshStatus()
