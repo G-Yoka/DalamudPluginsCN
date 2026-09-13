@@ -3,16 +3,16 @@
     "Author": "G-Yoka",
     "Name": "新月罗盘",
     "InternalName": "CrescentCompass",
-    "AssemblyVersion": "0.1.0.0",
+    "AssemblyVersion": "0.1.1.0",
     "Punchline": "新月岛寻宝、事件关注与地图导航助手。",
     "Description": "独立的新月岛助手。提供铜银宝箱、魔法罐寻宝、FATE/CE 关注提醒、怪物警戒与地图导航。",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
     "RepoUrl": "https://github.com/G-Yoka/DalamudPluginsCN",
     "IconUrl": "https://raw.githubusercontent.com/G-Yoka/DalamudPluginsCN/main/src/CrescentCompass/images/icon.png",
-    "DownloadLinkInstall": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/CrescentCompass-v0.1.0/CrescentCompass.zip",
-    "DownloadLinkUpdate": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/CrescentCompass-v0.1.0/CrescentCompass.zip",
-    "DownloadLinkTesting": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/CrescentCompass-v0.1.0/CrescentCompass.zip",
+    "DownloadLinkInstall": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/CrescentCompass-v0.1.1/CrescentCompass.zip",
+    "DownloadLinkUpdate": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/CrescentCompass-v0.1.1/CrescentCompass.zip",
+    "DownloadLinkTesting": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/CrescentCompass-v0.1.1/CrescentCompass.zip",
     "IsHide": false,
     "IsTestingExclusive": false,
     "AcceptsFeedback": true,
@@ -23,6 +23,6 @@
       "CE",
       "导航"
     ],
-    "LastUpdate": 1789233819
+    "LastUpdate": 1789280136
   }
 ]

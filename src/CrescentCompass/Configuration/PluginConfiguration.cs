@@ -47,19 +47,19 @@ public sealed class PluginConfiguration : IPluginConfiguration
     public bool ShowMapRouteLayer { get; set; }
     public float MapTextureOpacity { get; set; } = 1f;
     public float MapMarkerOpacity { get; set; } = 1f;
-    public float AetheryteIconScale { get; set; } = 1f;
+    public float AetheryteIconScale { get; set; } = 1.25f;
     public float LandmarkIconScale { get; set; } = 1f;
     public float EventIconScale { get; set; } = 1f;
     public float CeIconScale { get; set; } = 1f;
     public float FateIconScale { get; set; } = 1f;
     public float MagicPotIconScale { get; set; } = 1f;
     public float ForecastIconScale { get; set; } = 1f;
-    public float CandidateIconScale { get; set; } = 1f;
-    public float FocusedCandidateIconScale { get; set; } = 1f;
-    public float FieldTreasurePointIconScale { get; set; } = 1f;
-    public float ConfirmedFieldTreasureIconScale { get; set; } = 1f;
-    public float PartyMemberIconScale { get; set; } = 1f;
-    public float MapIconHoverScale { get; set; } = 1.35f;
+    public float CandidateIconScale { get; set; } = 0.8f;
+    public float FocusedCandidateIconScale { get; set; } = 0.8f;
+    public float FieldTreasurePointIconScale { get; set; } = 0.5f;
+    public float ConfirmedFieldTreasureIconScale { get; set; } = 0.5f;
+    public float PartyMemberIconScale { get; set; } = 0.6f;
+    public float MapIconHoverScale { get; set; } = 1.15f;
     public HashSet<uint> WatchedCeIds { get; set; } = [];
     public HashSet<uint> WatchedFateIds { get; set; } = [];
     public bool NotifyWatchedCe { get; set; } = true;

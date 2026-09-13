@@ -117,12 +117,13 @@ public sealed class ConfigWindow : Window
         DrawMarkerPreview();
         if (ImGui.Button("恢复本页默认值"))
         {
-            configuration.AetheryteIconScale = configuration.CeIconScale = configuration.FateIconScale = 1f;
+            configuration.AetheryteIconScale = 1.25f;
+            configuration.CeIconScale = configuration.FateIconScale = 1f;
             configuration.MagicPotIconScale = configuration.ForecastIconScale = configuration.LandmarkIconScale = 1f;
-            configuration.CandidateIconScale = configuration.FocusedCandidateIconScale = 1f;
-            configuration.FieldTreasurePointIconScale = configuration.ConfirmedFieldTreasureIconScale = 1f;
-            configuration.PartyMemberIconScale = 1f;
-            configuration.MapIconHoverScale = 1.35f;
+            configuration.CandidateIconScale = configuration.FocusedCandidateIconScale = 0.8f;
+            configuration.FieldTreasurePointIconScale = configuration.ConfirmedFieldTreasureIconScale = 0.5f;
+            configuration.PartyMemberIconScale = 0.6f;
+            configuration.MapIconHoverScale = 1.15f;
             save();
         }
     }
