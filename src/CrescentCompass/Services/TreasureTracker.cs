@@ -270,6 +270,8 @@ public sealed unsafe class TreasureTracker : IDisposable
             ConfirmedTreasure = null;
             calibratedTreasureObjectId = 0;
             Status = "已收到发现提示，正在关联本轮宝箱";
+            if (configuration.AutoCalibratePotCandidates)
+                CandidateCalibrationStatus = "已收到发现提示，正在捕获宝箱实际位置";
             return;
         }
 
@@ -348,6 +350,8 @@ public sealed unsafe class TreasureTracker : IDisposable
         Status = ConfirmedTreasure != null
             ? $"已确认{ActualTreasureLabel}"
             : $"发现提示已收到，{ActualTreasureLabel}对象尚未确认";
+        if (ConfirmedTreasure == null && configuration.AutoCalibratePotCandidates)
+            CandidateCalibrationStatus = "最近一次未校准：发现提示后未捕获到宝箱对象";
         treasureConfirmationDeadline = long.MaxValue;
     }
 
@@ -371,16 +375,10 @@ public sealed unsafe class TreasureTracker : IDisposable
                 continue;
 
             var treasure = (NativeTreasure*)(void*)gameObject.Address;
-            if (treasure == null ||
-                (treasure->Flags & NativeTreasure.TreasureFlags.FadedOut) != 0)
-                continue;
+            if (treasure == null) continue;
             var opened = (treasure->Flags & NativeTreasure.TreasureFlags.Opened) != 0;
+            if ((treasure->Flags & NativeTreasure.TreasureFlags.FadedOut) != 0 && !opened) continue;
             if (!gameObject.IsTargetable && !opened) continue;
-
-            var name = gameObject.Name.ToString();
-            if (ClassifyFieldTreasure(gameObject.BaseId, name) != FieldTreasureKind.Unknown ||
-                fieldTreasurePoints.Any(point => HorizontalDistanceSquared(point.Position, gameObject.Position) <= 4f))
-                continue;
 
             var distance = HorizontalDistance(reportPosition, gameObject.Position);
             if (distance > 35f || distance >= nearestDistance) continue;
@@ -405,9 +403,9 @@ public sealed unsafe class TreasureTracker : IDisposable
     {
         if (!configuration.AutoCalibratePotCandidates || calibratedTreasureObjectId == treasure.GameObjectId)
             return;
-        calibratedTreasureObjectId = treasure.GameObjectId;
 
-        var ranked = session.Candidates
+        var candidatePool = session.Candidates.Count > 0 ? session.Candidates : session.Universe;
+        var ranked = candidatePool
             .Select(candidate => (Candidate: candidate, Distance: HorizontalDistance(candidate.Position, treasure.Position)))
             .Where(item => item.Distance <= CalibrationMatchRadius)
             .OrderBy(item => item.Distance)
@@ -423,6 +421,7 @@ public sealed unsafe class TreasureTracker : IDisposable
             return;
         }
 
+        calibratedTreasureObjectId = treasure.GameObjectId;
         var match = ranked[0];
         var record = configuration.PotCandidateCalibrations.FirstOrDefault(item =>
             item.TerritoryId == clientState.TerritoryType && item.CandidateId == match.Candidate.Id);

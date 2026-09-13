@@ -163,6 +163,16 @@ public sealed class CeWatchWindow : Window
 
     public override void PostDraw() => ImGui.PopStyleColor();
 
+    public override void OnOpen()
+    {
+        islandFilter = clientState.TerritoryType switch
+        {
+            PotCandidateCatalog.SouthHornTerritoryId => 1,
+            PotCandidateCatalog.NorthHornTerritoryId => 2,
+            _ => islandFilter
+        };
+    }
+
     private bool Matches(CeSpawnDefinition entry)
     {
         if (islandFilter == 1 && entry.TerritoryId != PotCandidateCatalog.SouthHornTerritoryId) return false;

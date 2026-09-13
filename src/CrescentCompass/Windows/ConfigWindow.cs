@@ -19,13 +19,18 @@ public sealed class ConfigWindow : Window
     private readonly NavigationService navigationService;
     private readonly TreasureTracker treasureTracker;
     private readonly Action previewProminentBanner;
+    private readonly Action testInGameNotificationSound;
+    private readonly Action testWindowsNotification;
+    private readonly Func<string> windowsNotificationTestStatus;
     private string search = string.Empty;
     private int selectedPage;
 
     public ConfigWindow(PluginConfiguration configuration, Action save,
         Action applyOverlayVisibility, Action applyDetailsVisibility,
         IDalamudPluginInterface pluginInterface, NavigationService navigationService,
-        TreasureTracker treasureTracker, Action previewProminentBanner)
+        TreasureTracker treasureTracker, Action previewProminentBanner,
+        Action testInGameNotificationSound, Action testWindowsNotification,
+        Func<string> windowsNotificationTestStatus)
         : base("新月罗盘设置###CrescentCompass-Config")
     {
         this.configuration = configuration;
@@ -36,6 +41,9 @@ public sealed class ConfigWindow : Window
         this.navigationService = navigationService;
         this.treasureTracker = treasureTracker;
         this.previewProminentBanner = previewProminentBanner;
+        this.testInGameNotificationSound = testInGameNotificationSound;
+        this.testWindowsNotification = testWindowsNotification;
+        this.windowsNotificationTestStatus = windowsNotificationTestStatus;
         SizeConstraints = new WindowSizeConstraints
         {
             MinimumSize = new(620f, 430f),
@@ -209,7 +217,17 @@ public sealed class ConfigWindow : Window
         DrawBoolean("收藏的 CE／FATE 出现时提醒", configuration.NotifyWatchedCe, value => configuration.NotifyWatchedCe = value);
         DrawBoolean("游戏失焦时使用 Windows 横幅", configuration.ShowWindowsEventNotifications,
             value => configuration.ShowWindowsEventNotifications = value);
-        DrawBoolean("提醒时播放短提示音", configuration.WatchedCeSound, value => configuration.WatchedCeSound = value);
+        ImGui.SameLine();
+        if (ImGui.Button("测试系统通知")) testWindowsNotification();
+        ImGui.PushStyleColor(ImGuiCol.Text, UiTheme.Muted);
+        ImGui.TextWrapped(windowsNotificationTestStatus());
+        ImGui.PopStyleColor();
+        DrawBoolean("播放游戏内提示音", configuration.WatchedCeSound, value => configuration.WatchedCeSound = value);
+        ImGui.SameLine();
+        if (!configuration.WatchedCeSound) ImGui.BeginDisabled();
+        if (ImGui.Button("试听提示音")) testInGameNotificationSound();
+        DrawEventNotificationSound();
+        if (!configuration.WatchedCeSound) ImGui.EndDisabled();
         DrawBoolean("进入新实例时提醒已出现的收藏事件", configuration.NotifyCeOnEntry, value => configuration.NotifyCeOnEntry = value);
         ImGui.Spacing();
         ImGui.TextDisabled($"当前已关注 {configuration.WatchedCeIds.Count} 个 CE、{configuration.WatchedFateIds.Count} 个 FATE。收藏列表可在对应速查窗口管理。");
@@ -248,6 +266,23 @@ public sealed class ConfigWindow : Window
             save();
         }
         if (!configuration.ShowProminentInGameEventNotifications) ImGui.EndDisabled();
+    }
+
+    private void DrawEventNotificationSound()
+    {
+        var current = Math.Clamp(configuration.EventNotificationSoundEffect, 1, 16);
+        ImGui.SetNextItemWidth(160f);
+        if (ImGui.BeginCombo("提示音", $"<se.{current}>"))
+        {
+            for (var sound = 1; sound <= 16; sound++)
+            {
+                if (!ImGui.Selectable($"<se.{sound}>", current == sound)) continue;
+                configuration.EventNotificationSoundEffect = sound;
+                save();
+                testInGameNotificationSound();
+            }
+            ImGui.EndCombo();
+        }
     }
 
     private void DrawBannerPosition()
@@ -292,6 +327,12 @@ public sealed class ConfigWindow : Window
         DrawBoolean("显示路线图层", configuration.ShowMapRouteLayer, value => configuration.ShowMapRouteLayer = value);
         DrawBoolean("显示怪物警戒范围", configuration.ShowMonsterAggroRanges, value => configuration.ShowMonsterAggroRanges = value);
         DrawBoolean("自动导航避开怪物", configuration.AvoidMonsterAggroRanges, value => configuration.AvoidMonsterAggroRanges = value);
+        DrawBoolean("事件目标使用随机落点", configuration.RandomizeEventNavigationDestination,
+            value => configuration.RandomizeEventNavigationDestination = value);
+        if (!configuration.RandomizeEventNavigationDestination) ImGui.BeginDisabled();
+        SliderFloat("随机落点范围", configuration.EventNavigationRandomRadius,
+            value => configuration.EventNavigationRandomRadius = value, 2f, 15f, "%.0fm");
+        if (!configuration.RandomizeEventNavigationDestination) ImGui.EndDisabled();
         SliderFloat("近距离直接导航阈值", configuration.DirectNavigationDistance, value => configuration.DirectNavigationDistance = value, 0f, 300f, "%.0fm");
         ImGui.TextDisabled("仅在路线比较失败或超时时作为回退规则。");
         SliderFloat("传送路线最少节省时间", configuration.MinimumTeleportSavingSeconds,
@@ -315,7 +356,6 @@ public sealed class ConfigWindow : Window
         UiTheme.SectionTitle("警戒校准");
         DrawBoolean("显示警戒调试信息", configuration.ShowAggroDebug, value => configuration.ShowAggroDebug = value);
         DrawBoolean("自动校准警戒范围", configuration.AutoCalibrateAggroRanges, value => configuration.AutoCalibrateAggroRanges = value);
-        UiTheme.SectionTitle("配置");
     }
 
     private void DrawVnavmeshStatus()

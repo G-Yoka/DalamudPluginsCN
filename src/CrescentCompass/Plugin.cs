@@ -71,14 +71,18 @@ public sealed class Plugin : IDalamudPlugin
             Configuration, treasureTracker, clientState, condition, framework, addonLifecycle, log);
         watchedEventNotificationService = new WatchedEventNotificationService(
             Configuration, clientState, objectTable, framework, dataManager, notificationManager,
-            occultEventTracker, navigationService, log, SaveConfiguration);
+            occultEventTracker, navigationService, log, SaveConfiguration,
+            pluginInterface.AssemblyLocation.DirectoryName ?? AppContext.BaseDirectory);
         sceneOverlayRenderer = new SceneOverlayRenderer(
             Configuration, treasureTracker, occultEventTracker, gameGui, condition, objectTable, vnavmesh);
         mainWindow = new MainWindow(Configuration, treasureTracker, SaveConfiguration, OpenConfiguration,
             OpenCeWatch, OpenFateWatch, OpenMap);
         configWindow = new ConfigWindow(Configuration, SaveConfiguration,
             ApplyOverlayVisibility, ApplyMapDetailsVisibility, pluginInterface, navigationService,
-            treasureTracker, watchedEventNotificationService.ShowPreview);
+            treasureTracker, watchedEventNotificationService.ShowPreview,
+            watchedEventNotificationService.TestInGameNotificationSound,
+            watchedEventNotificationService.TestWindowsNotification,
+            () => watchedEventNotificationService.WindowsNotificationTestStatus);
         ceWatchWindow = new CeWatchWindow(
             Configuration, clientState, dataManager, occultEventTracker, navigationService, SaveConfiguration);
         fateWatchWindow = new FateWatchWindow(

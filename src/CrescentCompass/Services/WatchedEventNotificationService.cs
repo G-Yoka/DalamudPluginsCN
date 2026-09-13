@@ -1,15 +1,14 @@
 using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
-using System.Security;
+using System.Text;
 using CrescentCompass.Configuration;
 using CrescentCompass.Core;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.ImGuiNotification;
 using Dalamud.Interface.Utility;
 using Dalamud.Plugin.Services;
-using Windows.Data.Xml.Dom;
-using Windows.UI.Notifications;
+using FFXIVClientStructs.FFXIV.Client.UI;
 
 namespace CrescentCompass.Services;
 
@@ -17,7 +16,6 @@ public sealed class WatchedEventNotificationService : IDisposable
 {
     private const long BatchDelayMilliseconds = 1_000;
     private const long MissingGraceMilliseconds = 3_000;
-    private const string ToastGroup = "CrescentCompass-WatchedEvents";
     private readonly PluginConfiguration configuration;
     private readonly IClientState clientState;
     private readonly IObjectTable objectTable;
@@ -28,20 +26,21 @@ public sealed class WatchedEventNotificationService : IDisposable
     private readonly NavigationService navigationService;
     private readonly IPluginLog log;
     private readonly Action save;
+    private readonly string pluginDirectory;
     private readonly EventAppearanceLedger appearances = new();
     private readonly Dictionary<EventAppearanceKey, OccultEventSnapshot> pending = [];
-    private readonly CancellationTokenSource disposalCancellation = new();
     private uint territoryId;
     private uint zoneServerId;
     private bool firstScan = true;
     private long flushAt;
     private ProminentBanner? prominentBanner;
+    private string windowsNotificationTestStatus = "尚未测试系统通知";
     private bool disposed;
 
     public WatchedEventNotificationService(PluginConfiguration configuration, IClientState clientState,
         IObjectTable objectTable, IFramework framework, IDataManager dataManager,
         INotificationManager notificationManager, OccultEventTracker eventTracker,
-        NavigationService navigationService, IPluginLog log, Action save)
+        NavigationService navigationService, IPluginLog log, Action save, string pluginDirectory)
     {
         this.configuration = configuration;
         this.clientState = clientState;
@@ -53,6 +52,7 @@ public sealed class WatchedEventNotificationService : IDisposable
         this.navigationService = navigationService;
         this.log = log;
         this.save = save;
+        this.pluginDirectory = pluginDirectory;
         framework.Update += OnFrameworkUpdate;
     }
 
@@ -61,8 +61,6 @@ public sealed class WatchedEventNotificationService : IDisposable
         if (disposed) return;
         disposed = true;
         framework.Update -= OnFrameworkUpdate;
-        disposalCancellation.Cancel();
-        disposalCancellation.Dispose();
         pending.Clear();
         appearances.Reset();
         prominentBanner = null;
@@ -170,6 +168,19 @@ public sealed class WatchedEventNotificationService : IDisposable
             new OccultEventSnapshot(1971, "骄傲的咒杀者——执行者", origin + new Vector3(168f, 3f, 72f), 0,
                 OccultEventKind.Fate, "进度 12% · 剩余 19:12", "[黄]", true)
         ], BannerDurationMilliseconds());
+        PlayInGameNotificationSound();
+    }
+
+    public string WindowsNotificationTestStatus => windowsNotificationTestStatus;
+
+    public void TestInGameNotificationSound() => PlayInGameNotificationSound();
+
+    public void TestWindowsNotification()
+    {
+        TryShowWindows(
+            "魔法罐预告 · 幸福的魔法罐（上）",
+            "预计 01:04:22 出现 · 还有 04:27\n新月岛南部 · X:24.6 Y:34.8 · 众包",
+            "新月罗盘 · 伪数据预览");
     }
 
     private void DrawBannerEvent(OccultEventSnapshot item)
@@ -371,7 +382,8 @@ public sealed class WatchedEventNotificationService : IDisposable
             zoneServerId = currentZoneServerId;
 
         var actualEvents = eventTracker.ActiveEvents
-            .Where(item => item.Kind is OccultEventKind.CriticalEngagement or OccultEventKind.Fate or OccultEventKind.MagicPot)
+            .Where(item => item.Kind is OccultEventKind.CriticalEngagement or OccultEventKind.Fate or
+                OccultEventKind.MagicPot or OccultEventKind.MagicPotForecast)
             .ToArray();
         var notifyThisScan = !firstScan || configuration.NotifyCeOnEntry;
 
@@ -421,25 +433,28 @@ public sealed class WatchedEventNotificationService : IDisposable
             .ToArray();
         pending.Clear();
         var target = Nearest(events);
-        var title = events.Length == 1 ? "收藏事件已出现" : $"{events.Length} 个收藏事件已出现";
+        var title = events.Length == 1
+            ? $"收藏 {KindName(events[0])} 已出现"
+            : $"{events.Length} 个收藏事件已出现";
         var content = string.Join('\n', events.Take(5).Select(DisplayLine));
         if (events.Length > 5) content += $"\n另有 {events.Length - 5} 个事件";
+
+        if (configuration.ShowProminentInGameEventNotifications)
+            prominentBanner = new ProminentBanner(events.OrderBy(DistanceSquared).ToArray(),
+                BannerDurationMilliseconds());
 
         if (IsGameForeground())
         {
             ShowInGame(title, content, target);
-            if (configuration.ShowProminentInGameEventNotifications)
-                prominentBanner = new ProminentBanner(events.OrderBy(DistanceSquared).ToArray(),
-                    BannerDurationMilliseconds());
         }
         else if (configuration.ShowWindowsEventNotifications && TryShowWindows(title, content)) { }
         else ShowInGame(title, content, target);
 
-        if (configuration.WatchedCeSound) MessageBeep(0x00000040);
     }
 
     private void ShowInGame(string title, string content, OccultEventSnapshot target)
     {
+        PlayInGameNotificationSound();
         var active = notificationManager.AddNotification(new Dalamud.Interface.ImGuiNotification.Notification
         {
             Title = title,
@@ -457,47 +472,123 @@ public sealed class WatchedEventNotificationService : IDisposable
         };
     }
 
-    private bool TryShowWindows(string title, string content)
+    private unsafe void PlayInGameNotificationSound()
+    {
+        if (!configuration.WatchedCeSound) return;
+        try
+        {
+            UIGlobals.PlayChatSoundEffect((uint)configuration.EventNotificationSoundEffect);
+        }
+        catch (Exception exception)
+        {
+            log.Warning(exception, "Unable to play the watched-event in-game notification sound.");
+        }
+    }
+
+    private bool TryShowWindows(string title, string content, string attribution = "新月罗盘")
     {
         try
         {
-            var appId = CurrentAppUserModelId();
-            var xml = new XmlDocument();
-            xml.LoadXml($"<toast duration=\"short\"><visual><binding template=\"ToastGeneric\">" +
-                        $"<text>{Escape(title)}</text><text>{Escape(content)}</text>" +
-                        "</binding></visual><audio silent=\"true\"/></toast>");
-            var tag = $"watched-{Guid.NewGuid():N}";
-            var toast = new ToastNotification(xml)
+            var systemDirectory = Environment.SystemDirectory;
+            if (string.IsNullOrWhiteSpace(systemDirectory))
             {
-                Tag = tag,
-                Group = ToastGroup,
-                ExpirationTime = DateTimeOffset.Now.AddSeconds(5)
+                var windowsDirectory = Environment.GetEnvironmentVariable("WINDIR");
+                if (string.IsNullOrWhiteSpace(windowsDirectory))
+                    throw new DirectoryNotFoundException("无法确定 Windows 系统目录。");
+                systemDirectory = Path.Combine(windowsDirectory, "System32");
+            }
+            var powershell = Path.Combine(systemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
+            if (!File.Exists(powershell))
+                throw new FileNotFoundException("找不到 Windows PowerShell，无法创建隔离的通知进程。", powershell);
+
+            var helper = ResolveNotificationAsset("scripts", "ToastHelper.ps1");
+            var iconPng = ResolveNotificationAsset("images", "toast-icon.png");
+            var iconIco = ResolveNotificationAsset("images", "icon.ico");
+            var encodedTitle = Convert.ToBase64String(Encoding.UTF8.GetBytes(title));
+            var encodedContent = Convert.ToBase64String(Encoding.UTF8.GetBytes(content));
+            var encodedAttribution = Convert.ToBase64String(Encoding.UTF8.GetBytes(attribution));
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = powershell,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden,
+                RedirectStandardError = true
             };
-            if (string.IsNullOrWhiteSpace(appId)) ToastNotificationManager.CreateToastNotifier().Show(toast);
-            else ToastNotificationManager.CreateToastNotifier(appId).Show(toast);
-            _ = RemoveToastAfterDelay(tag, appId, disposalCancellation.Token);
+            startInfo.ArgumentList.Add("-NoLogo");
+            startInfo.ArgumentList.Add("-NoProfile");
+            startInfo.ArgumentList.Add("-NonInteractive");
+            startInfo.ArgumentList.Add("-ExecutionPolicy");
+            startInfo.ArgumentList.Add("Bypass");
+            startInfo.ArgumentList.Add("-File");
+            startInfo.ArgumentList.Add(helper);
+            startInfo.ArgumentList.Add("-TitleBase64");
+            startInfo.ArgumentList.Add(encodedTitle);
+            startInfo.ArgumentList.Add("-ContentBase64");
+            startInfo.ArgumentList.Add(encodedContent);
+            startInfo.ArgumentList.Add("-AttributionBase64");
+            startInfo.ArgumentList.Add(encodedAttribution);
+            startInfo.ArgumentList.Add("-IconPng");
+            startInfo.ArgumentList.Add(iconPng);
+            startInfo.ArgumentList.Add("-IconIco");
+            startInfo.ArgumentList.Add(iconIco);
+            var process = Process.Start(startInfo) ??
+                          throw new InvalidOperationException("Windows PowerShell 通知进程未能启动。");
+            windowsNotificationTestStatus = "系统通知已交给独立进程发送…";
+            _ = ObserveToastProcess(process);
             return true;
         }
         catch (Exception exception)
         {
+            windowsNotificationTestStatus = $"系统通知发送失败：{exception.GetType().Name} · {exception.Message}";
             log.Warning(exception, "Unable to show Windows watched-event notification; using in-game notification.");
             return false;
         }
     }
 
-    private async Task RemoveToastAfterDelay(string tag, string? appId, CancellationToken cancellationToken)
+    private string ResolveNotificationAsset(params string[] relativeParts)
+    {
+        var roots = new[]
+        {
+            pluginDirectory,
+            Path.GetDirectoryName(typeof(WatchedEventNotificationService).Assembly.Location),
+            AppContext.BaseDirectory
+        }.Where(root => !string.IsNullOrWhiteSpace(root)).Distinct(StringComparer.OrdinalIgnoreCase);
+
+        string? firstCandidate = null;
+        foreach (var root in roots)
+        {
+            var candidate = relativeParts.Aggregate(root!, Path.Combine);
+            firstCandidate ??= candidate;
+            if (File.Exists(candidate)) return candidate;
+
+            var parent = Directory.GetParent(root!)?.FullName;
+            if (string.IsNullOrWhiteSpace(parent)) continue;
+            candidate = relativeParts.Aggregate(parent, Path.Combine);
+            if (File.Exists(candidate)) return candidate;
+        }
+
+        throw new FileNotFoundException($"找不到系统通知资源：{Path.Combine(relativeParts)}", firstCandidate);
+    }
+
+    private async Task ObserveToastProcess(Process process)
     {
         try
         {
-            await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
-            if (string.IsNullOrWhiteSpace(appId)) ToastNotificationManager.History.Remove(tag, ToastGroup);
-            else ToastNotificationManager.History.Remove(tag, ToastGroup, appId);
+            var errorTask = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync().ConfigureAwait(false);
+            var error = (await errorTask.ConfigureAwait(false)).Trim();
+            windowsNotificationTestStatus = process.ExitCode == 0
+                ? "系统通知发送成功。若未显示，请检查 Windows 通知与勿扰模式。"
+                : $"系统通知发送失败：PowerShell 退出代码 {process.ExitCode}" +
+                  (error.Length == 0 ? string.Empty : $" · {error}");
         }
-        catch (OperationCanceledException) { }
         catch (Exception exception)
         {
-            log.Debug(exception, "Unable to remove Windows watched-event notification history item.");
+            windowsNotificationTestStatus = $"系统通知进程失败：{exception.GetType().Name} · {exception.Message}";
+            log.Warning(exception, "Unable to observe Windows notification helper process.");
         }
+        finally { process.Dispose(); }
     }
 
     private OccultEventSnapshot Nearest(IReadOnlyList<OccultEventSnapshot> events)
@@ -516,8 +607,13 @@ public sealed class WatchedEventNotificationService : IDisposable
         return $"{KindName(item)}：{item.Name}{reward} · {item.StateText}";
     }
 
-    private static string KindName(OccultEventSnapshot item) =>
-        item.Kind == OccultEventKind.CriticalEngagement ? "CE" : "FATE";
+    private static string KindName(OccultEventSnapshot item) => item.Kind switch
+    {
+        OccultEventKind.CriticalEngagement => "CE",
+        OccultEventKind.MagicPotForecast => "魔法罐预告",
+        OccultEventKind.MagicPot => "魔法罐",
+        _ => "FATE"
+    };
 
     private static bool IsGameForeground()
     {
@@ -527,31 +623,14 @@ public sealed class WatchedEventNotificationService : IDisposable
         return processId == (uint)Environment.ProcessId;
     }
 
-    private static string? CurrentAppUserModelId()
-    {
-        var result = GetCurrentProcessExplicitAppUserModelID(out var pointer);
-        if (result != 0 || pointer == 0) return null;
-        try { return Marshal.PtrToStringUni(pointer); }
-        finally { Marshal.FreeCoTaskMem(pointer); }
-    }
-
-    private static string Escape(string value) => SecurityElement.Escape(value) ?? string.Empty;
-
     [DllImport("user32.dll")]
     private static extern nint GetForegroundWindow();
 
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(nint window, out uint processId);
 
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool MessageBeep(uint type);
-
-    [DllImport("shell32.dll")]
-    private static extern int GetCurrentProcessExplicitAppUserModelID(out nint appId);
-
     private static EventAppearanceKey Key(OccultEventSnapshot item) =>
-        new(item.Kind == OccultEventKind.CriticalEngagement, item.DataId);
+        new((byte)item.Kind, item.DataId);
 
     private sealed class ProminentBanner
     {

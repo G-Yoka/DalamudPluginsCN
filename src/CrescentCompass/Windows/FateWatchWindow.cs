@@ -143,6 +143,16 @@ public sealed class FateWatchWindow : Window
     public override void PreDraw() => ImGui.PushStyleColor(ImGuiCol.WindowBg, UiTheme.Panel);
     public override void PostDraw() => ImGui.PopStyleColor();
 
+    public override void OnOpen()
+    {
+        islandFilter = clientState.TerritoryType switch
+        {
+            PotCandidateCatalog.SouthHornTerritoryId => 1,
+            PotCandidateCatalog.NorthHornTerritoryId => 2,
+            _ => islandFilter
+        };
+    }
+
     private bool Matches(FateDefinition entry)
     {
         if (islandFilter == 1 && entry.TerritoryId != PotCandidateCatalog.SouthHornTerritoryId) return false;

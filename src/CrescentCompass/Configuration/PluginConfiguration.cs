@@ -5,7 +5,7 @@ namespace CrescentCompass.Configuration;
 [Serializable]
 public sealed class PluginConfiguration : IPluginConfiguration
 {
-    public int Version { get; set; } = 10;
+    public int Version { get; set; } = 12;
     public bool ShowMainWindow { get; set; } = true;
     public bool ShowOverlay { get; set; } = true;
     public bool ShowCandidateIndicators { get; set; } = true;
@@ -21,6 +21,8 @@ public sealed class PluginConfiguration : IPluginConfiguration
     public bool InterruptNavigationOnMovementInput { get; set; } = true;
     public bool ShowMonsterAggroRanges { get; set; } = true;
     public bool AvoidMonsterAggroRanges { get; set; } = true;
+    public bool RandomizeEventNavigationDestination { get; set; } = true;
+    public float EventNavigationRandomRadius { get; set; } = 8f;
     public bool AutoCalibrateAggroRanges { get; set; }
     public bool ShowAggroDebug { get; set; }
     public float DirectNavigationDistance { get; set; } = 60f;
@@ -64,6 +66,7 @@ public sealed class PluginConfiguration : IPluginConfiguration
     public HashSet<uint> WatchedFateIds { get; set; } = [];
     public bool NotifyWatchedCe { get; set; } = true;
     public bool WatchedCeSound { get; set; } = true;
+    public int EventNotificationSoundEffect { get; set; } = 1;
     public bool ShowWindowsEventNotifications { get; set; } = true;
     public bool ShowProminentInGameEventNotifications { get; set; } = true;
     public EventBannerPosition ProminentBannerPosition { get; set; } = EventBannerPosition.TopCenter;
@@ -120,7 +123,18 @@ public sealed class PluginConfiguration : IPluginConfiguration
             AutoCalibratePotCandidates = true;
             Version = 10;
         }
-        Version = Math.Max(10, Version);
+        if (Version < 11)
+        {
+            RandomizeEventNavigationDestination = true;
+            EventNavigationRandomRadius = 8f;
+            Version = 11;
+        }
+        if (Version < 12)
+        {
+            EventNotificationSoundEffect = 1;
+            Version = 12;
+        }
+        Version = Math.Max(12, Version);
         DirectNavigationDistance = Math.Clamp(DirectNavigationDistance, 0f, 300f);
         MinimumTeleportSavingSeconds = Math.Clamp(MinimumTeleportSavingSeconds, 0f, 60f);
         AverageDemiReturnSeconds = Math.Clamp(AverageDemiReturnSeconds, 1f, 35f);
@@ -135,6 +149,8 @@ public sealed class PluginConfiguration : IPluginConfiguration
         AggroSafetyMargin = Math.Clamp(AggroSafetyMargin, 0f, 6f);
         AggroScanRange = Math.Clamp(AggroScanRange, 20f, 150f);
         AggroVerticalTolerance = Math.Clamp(AggroVerticalTolerance, 1f, 20f);
+        EventNavigationRandomRadius = Math.Clamp(EventNavigationRandomRadius, 2f, 15f);
+        EventNotificationSoundEffect = Math.Clamp(EventNotificationSoundEffect, 1, 16);
         MaxSceneCandidates = Math.Clamp(MaxSceneCandidates, 1, 12);
         IndicatorRadius = Math.Clamp(IndicatorRadius, 50f, 1000f);
         FieldTreasureIndicatorRadius = Math.Clamp(FieldTreasureIndicatorRadius, 20f, 1000f);

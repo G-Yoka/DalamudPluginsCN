@@ -49,6 +49,7 @@ public sealed unsafe class NavigationService : IDisposable
     private bool observedBusy;
     private long startedAt;
     private Vector3 destination;
+    private Vector3? eventNavigationTarget;
     private string targetName = string.Empty;
     private CrescentAetheryte? pendingAetheryte;
     private CrescentAetheryte? sourceAetheryte;
@@ -116,13 +117,14 @@ public sealed unsafe class NavigationService : IDisposable
     public string Status { get; private set; } = string.Empty;
     public string DecisionStatus { get; private set; } = "尚未选择路线";
     public bool IsNavigating => active || pendingAetheryte != null || routePlan != null || arrivalFollowUp != null;
-    public Vector3? ActiveDestination => active ? destination : routePlan?.FollowUp.Position ?? pendingFollowUp?.Position;
+    public Vector3? ActiveDestination => eventNavigationTarget ??
+        (active ? destination : routePlan?.FollowUp.Position ?? pendingFollowUp?.Position);
     public IReadOnlyList<Vector3> DisplayPath => displayPath;
     public bool IsVnavmeshReady => vnavmesh.IsAvailable();
 
     public bool NavigateToEvent(Vector3 target, string name)
     {
-        if (IsNavigating && ActiveDestination is { } currentTarget &&
+        if (IsNavigating && (eventNavigationTarget ?? ActiveDestination) is { } currentTarget &&
             HorizontalDistanceSquared(currentTarget, target) < 1f)
         {
             Cancel("已取消自动导航");
@@ -130,24 +132,26 @@ public sealed unsafe class NavigationService : IDisposable
         }
         Cancel(null);
         if (tracker.PlayerPosition is not { } player) return false;
+        var destinationPoint = vnavmesh.IsAvailable() ? ResolveDestinationPoint(target) : target;
         if (configuration.DirectNavigationDistance > 0f &&
             HorizontalDistanceSquared(player, target) <=
             configuration.DirectNavigationDistance * configuration.DirectNavigationDistance)
         {
             DecisionStatus = $"{tracker.AreaName}：目标在 {configuration.DirectNavigationDistance:F0}m 直达阈值内";
-            return NavigateTo(target, name);
+            return RememberEventTarget(NavigateTo(destinationPoint ?? target, name), target);
         }
         if (!vnavmesh.IsAvailable())
         {
-            return FallBackFromRouteComparison(target, name, player, "vnavmesh 尚未就绪");
+            return RememberEventTarget(
+                FallBackFromRouteComparison(target, name, player, "vnavmesh 尚未就绪"), target);
         }
-        var destinationPoint = ResolveDestinationPoint(target);
         var sources = CrescentAetheryteCatalog.ForTerritory(
             tracker.AreaName == "新月岛北部"
                 ? Core.PotCandidateCatalog.NorthHornTerritoryId
                 : Core.PotCandidateCatalog.SouthHornTerritoryId);
         if (destinationPoint is not { } resolved || sources.Count == 0)
-            return FallBackFromRouteComparison(target, name, player, "目标附近没有可比较落点");
+            return RememberEventTarget(
+                FallBackFromRouteComparison(target, name, player, "目标附近没有可比较落点"), target);
 
         var cancellation = new CancellationTokenSource();
         // Submit the direct route first so the most important baseline is not queued behind every crystal query.
@@ -161,7 +165,8 @@ public sealed unsafe class NavigationService : IDisposable
         {
             cancellation.Cancel();
             cancellation.Dispose();
-            return FallBackFromRouteComparison(target, name, player, "无法提交完整路线比较");
+            return RememberEventTarget(
+                FallBackFromRouteComparison(target, name, player, "无法提交完整路线比较"), target);
         }
 
         var nearCrystal = sources.Any(source => HorizontalDistanceSquared(player, source.Position) <= 12f * 12f);
@@ -193,7 +198,14 @@ public sealed unsafe class NavigationService : IDisposable
         cancelInputArmedAt = now + 300;
         DecisionStatus = $"{tracker.AreaName}：正在比较直达与 {routes.Length} 条水晶路线到 {name} 的预计用时";
         Status = "正在比较直达、亚返回与步行到水晶的预计用时";
+        eventNavigationTarget = target;
         return true;
+    }
+
+    private bool RememberEventTarget(bool started, Vector3 target)
+    {
+        eventNavigationTarget = started ? target : null;
+        return started;
     }
 
     public bool NavigateToMapPosition(Vector2 mapPosition, string name)
@@ -221,7 +233,9 @@ public sealed unsafe class NavigationService : IDisposable
             Cancel("已取消水晶传送");
             return false;
         }
+        var logicalEventTarget = followUp?.Position;
         Cancel(null);
+        eventNavigationTarget = logicalEventTarget;
         if (!tracker.IsSupportedTerritory)
         {
             Status = "水晶传送仅在新月岛南部或北部可用";
@@ -362,6 +376,7 @@ public sealed unsafe class NavigationService : IDisposable
         if (hadTravel) vnavmesh.Stop();
         if (hadTravel) commandManager.ProcessCommand("/automove off");
         active = false;
+        eventNavigationTarget = null;
         displayPath = [];
         ownsMovingPath = false;
         observedBusy = false;
@@ -955,6 +970,26 @@ public sealed unsafe class NavigationService : IDisposable
 
     private Vector3? ResolveDestinationPoint(Vector3 target)
     {
+        if (configuration.RandomizeEventNavigationDestination)
+        {
+            var maximumRadius = configuration.EventNavigationRandomRadius;
+            var minimumRadius = MathF.Min(3f, maximumRadius);
+            for (var index = 0; index < 8; index++)
+            {
+                var angle = Random.Shared.NextSingle() * MathF.Tau;
+                var radius = MathF.Sqrt(
+                    minimumRadius * minimumRadius + Random.Shared.NextSingle() *
+                    (maximumRadius * maximumRadius - minimumRadius * minimumRadius));
+                var probe = target + new Vector3(MathF.Sin(angle) * radius, 0f, MathF.Cos(angle) * radius);
+                var point = vnavmesh.QueryNearestReachable(probe, 2f, 30f);
+                if (point is not { } reachable) continue;
+                var distance = HorizontalDistanceSquared(reachable, target);
+                if (distance >= 1.5f * 1.5f &&
+                    distance <= (maximumRadius + 3f) * (maximumRadius + 3f))
+                    return reachable;
+            }
+        }
+
         var direct = vnavmesh.QueryNearestReachable(target, 12f, 500f);
         if (direct != null) return direct;
         for (var index = 0; index < 8; index++)

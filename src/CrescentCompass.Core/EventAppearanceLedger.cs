@@ -1,6 +1,9 @@
 namespace CrescentCompass.Core;
 
-public readonly record struct EventAppearanceKey(bool IsCe, uint Id);
+public readonly record struct EventAppearanceKey(byte Kind, uint Id)
+{
+    public EventAppearanceKey(bool isCe, uint id) : this(isCe ? (byte)1 : (byte)0, id) { }
+}
 
 public sealed class EventAppearanceLedger
 {
