@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="../../src/CrescentCompass/images/icon.png" width="112" alt="新月罗盘图标">
+  <img src="images/icon.png" width="112" alt="新月罗盘图标">
 </p>
 
 <h1 align="center">新月罗盘</h1>

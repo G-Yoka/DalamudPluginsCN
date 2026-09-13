@@ -4,6 +4,8 @@
   "InternalName": "CrescentCompass",
   "Punchline": "新月岛寻宝、事件关注与地图导航助手。",
   "Description": "独立的新月岛助手。提供撒娇罐宝箱定位、CE 关注、怪物警戒与地图导航。",
+  "RepoUrl": "https://github.com/G-Yoka/DalamudPluginsCN",
+  "IconUrl": "https://raw.githubusercontent.com/G-Yoka/DalamudPluginsCN/main/plugins/CrescentCompass/images/icon.png",
   "ApplicableVersion": "any",
   "DalamudApiLevel": 15,
   "Tags": [
