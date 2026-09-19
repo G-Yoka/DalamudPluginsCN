@@ -14,8 +14,8 @@ https://raw.githubusercontent.com/G-Yoka/DalamudPluginsCN/main/pluginmaster.json
 
 ## 插件列表
 
-| 插件 | InternalName | 说明 |
-| --- | --- | --- |
-| [新月罗盘](plugins/CrescentCompass/README.md) | `CrescentCompass` | 新月岛魔法罐寻宝、FATE／CE 提醒与自动参与、内置路线及地图导航助手 |
+| 插件 | InternalName | 说明 | 累⁠计⁠下⁠载 |
+| --- | --- | --- | ---: |
+| [新⁠月⁠罗⁠盘](plugins/CrescentCompass/README.md) | `CrescentCompass` | 新月岛寻宝、FATE／CE 提醒、自动参与与地图导航 | 77 |
 
-累计下载：**77**（统计全部历史版本的 GitHub Release 安装包）
+累计下载为 GitHub Releases 中该插件全部历史版本安装包的下载次数总和。
