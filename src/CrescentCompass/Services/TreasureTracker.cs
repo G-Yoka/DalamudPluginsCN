@@ -5,6 +5,7 @@ using Dalamud.Game.Chat;
 using Dalamud.Game.Text;
 using Dalamud.Plugin.Services;
 using Dalamud.Game.ClientState.Objects.Enums;
+using Dalamud.Game.ClientState.Objects.Types;
 using FFXIVClientStructs.FFXIV.Client.Game.Control;
 using NativeTreasure = FFXIVClientStructs.FFXIV.Client.Game.Object.Treasure;
 
@@ -12,9 +13,7 @@ namespace CrescentCompass.Services;
 
 public sealed unsafe class TreasureTracker : IDisposable
 {
-    private const float CalibrationMatchRadius = 15f;
-    private const float CalibrationMinimumSeparation = 5f;
-    private const float CalibrationRepeatRadius = 3f;
+    private const long TreasureSpawnCaptureWindowMilliseconds = 8_000;
     private readonly PluginConfiguration configuration;
     private readonly IChatGui chatGui;
     private readonly IClientState clientState;
@@ -26,6 +25,7 @@ public sealed unsafe class TreasureTracker : IDisposable
     private readonly PotPredictionSession session = new();
     private PotCandidateCatalogResult catalog = new([], [], string.Empty, string.Empty);
     private bool disposed;
+    private bool wasPlayerDead;
     private Vector3? treasureReportPosition;
     private long treasureConfirmationDeadline;
     private long terminalResetAt;
@@ -35,6 +35,7 @@ public sealed unsafe class TreasureTracker : IDisposable
     private readonly List<FieldTreasureSnapshot> fieldTreasures = [];
     private IReadOnlyList<FieldTreasurePoint> fieldTreasurePoints = [];
     private ulong calibratedTreasureObjectId;
+    private uint calibrationCandidateId;
 
     public TreasureTracker(
         PluginConfiguration configuration,
@@ -97,6 +98,9 @@ public sealed unsafe class TreasureTracker : IDisposable
     public int CandidateCalibrationCount => configuration.PotCandidateCalibrations.Count;
     public string CandidateCalibrationStatus { get; private set; } = "尚未捕获宝箱实际位置";
 
+    public bool IsFieldTreasureObject(IGameObject gameObject) =>
+        gameObject.ObjectKind == ObjectKind.Treasure && IsFieldTreasurePosition(gameObject.Position);
+
     public string ExportCandidateCalibrations()
     {
         var lines = new List<string>
@@ -150,6 +154,7 @@ public sealed unsafe class TreasureTracker : IDisposable
         treasureConfirmationDeadline = 0;
         terminalResetAt = 0;
         calibratedTreasureObjectId = 0;
+        calibrationCandidateId = 0;
         Status = IsSupportedTerritory ? message : "等待进入新月岛北部或南部";
     }
 
@@ -204,6 +209,7 @@ public sealed unsafe class TreasureTracker : IDisposable
         treasureConfirmationDeadline = 0;
         terminalResetAt = 0;
         calibratedTreasureObjectId = 0;
+        calibrationCandidateId = 0;
         if (!IsSupportedTerritory)
         {
             catalog = new([], [], string.Empty, string.Empty);
@@ -243,6 +249,7 @@ public sealed unsafe class TreasureTracker : IDisposable
             treasureConfirmationDeadline = 0;
             terminalResetAt = 0;
             calibratedTreasureObjectId = 0;
+            calibrationCandidateId = 0;
             Status = "第 2 处财宝：等待罐子提示";
             return;
         }
@@ -252,8 +259,8 @@ public sealed unsafe class TreasureTracker : IDisposable
             if (session.Stage == PotSessionStage.AwaitingTreasure && treasureReportPosition != null)
             {
                 ScanNearbyTreasures();
-                terminalResetAt = Environment.TickCount64 + 1_500;
-                Status = "本轮已结束，正在保存宝箱实际位置";
+                terminalResetAt = Environment.TickCount64 + TreasureSpawnCaptureWindowMilliseconds;
+                Status = "本轮已结束，正在等待并捕获新出现的宝箱";
                 return;
             }
             Reset("本轮已结束，已清空线索；等待下一次罐子提示");
@@ -269,6 +276,7 @@ public sealed unsafe class TreasureTracker : IDisposable
             nextTreasureScan = 0;
             ConfirmedTreasure = null;
             calibratedTreasureObjectId = 0;
+            calibrationCandidateId = FocusedCandidate?.Id ?? 0;
             Status = "已收到发现提示，正在关联本轮宝箱";
             if (configuration.AutoCalibratePotCandidates)
                 CandidateCalibrationStatus = "已收到发现提示，正在捕获宝箱实际位置";
@@ -322,6 +330,13 @@ public sealed unsafe class TreasureTracker : IDisposable
 
     private void OnFrameworkUpdate(IFramework _)
     {
+        var playerDead = objectTable.LocalPlayer?.IsDead == true;
+        if (playerDead && !wasPlayerDead &&
+            (session.Stage != PotSessionStage.Waiting || session.AcceptedHints.Count > 0 ||
+             FocusedCandidate != null || ConfirmedTreasure != null))
+            Reset("玩家死亡，魔法罐寻宝候选已清空");
+        wasPlayerDead = playerDead;
+
         var now = Environment.TickCount64;
         if (IsSupportedTerritory && fieldTreasurePoints.Count == 0 && now >= nextFieldTreasureLayoutLoad)
         {
@@ -358,6 +373,7 @@ public sealed unsafe class TreasureTracker : IDisposable
     private void ReloadFieldTreasurePoints()
     {
         fieldTreasurePoints = FieldTreasureLayoutReader.Read(dataManager, log, clientState.TerritoryType);
+        RemoveFieldTreasureContaminatedCalibrations();
         if (fieldTreasurePoints.Count > 0)
             log.Information("Loaded {Count} field treasure points for territory {Territory}.",
                 fieldTreasurePoints.Count, clientState.TerritoryType);
@@ -367,12 +383,14 @@ public sealed unsafe class TreasureTracker : IDisposable
     {
         if (treasureReportPosition is not { } reportPosition) return;
         TreasureSnapshot? nearest = null;
+        var nearestOpened = false;
         var nearestDistance = float.MaxValue;
         foreach (var gameObject in objectTable)
         {
             if (gameObject == null || !gameObject.IsValid() ||
                 gameObject.ObjectKind != ObjectKind.Treasure || gameObject.Address == nint.Zero)
                 continue;
+            if (IsFieldTreasureObject(gameObject)) continue;
 
             var treasure = (NativeTreasure*)(void*)gameObject.Address;
             if (treasure == null) continue;
@@ -384,13 +402,15 @@ public sealed unsafe class TreasureTracker : IDisposable
             if (distance > 35f || distance >= nearestDistance) continue;
             nearestDistance = distance;
             nearest = new(gameObject.GameObjectId, gameObject.Position);
+            nearestOpened = opened;
         }
 
         var previouslyConfirmed = ConfirmedTreasure != null;
         ConfirmedTreasure = nearest;
         if (nearest != null)
         {
-            TryCalibrateCandidate(nearest.Value);
+            if (nearestOpened)
+                RecordOpenedMagicPotTreasure(nearest.Value);
             Status = $"已确认{ActualTreasureLabel}";
         }
         else if (previouslyConfirmed)
@@ -399,38 +419,41 @@ public sealed unsafe class TreasureTracker : IDisposable
         }
     }
 
-    private void TryCalibrateCandidate(TreasureSnapshot treasure)
+    public void RecordOpenedMagicPotTreasure(TreasureSnapshot treasure, uint candidateId = 0)
     {
         if (!configuration.AutoCalibratePotCandidates || calibratedTreasureObjectId == treasure.GameObjectId)
             return;
-
-        var candidatePool = session.Candidates.Count > 0 ? session.Candidates : session.Universe;
-        var ranked = candidatePool
-            .Select(candidate => (Candidate: candidate, Distance: HorizontalDistance(candidate.Position, treasure.Position)))
-            .Where(item => item.Distance <= CalibrationMatchRadius)
-            .OrderBy(item => item.Distance)
-            .Take(2)
-            .ToArray();
-        if (ranked.Length == 0 ||
-            ranked.Length > 1 && ranked[1].Distance - ranked[0].Distance < CalibrationMinimumSeparation)
+        if (IsFieldTreasurePosition(treasure.Position))
         {
-            CandidateCalibrationStatus = ranked.Length == 0
-                ? "最近一次未校准：实际宝箱距候选超过 15 米"
-                : "最近一次未校准：附近候选无法唯一判断";
-            log.Debug("Skipped ambiguous pot candidate calibration for treasure {ObjectId}.", treasure.GameObjectId);
+            CandidateCalibrationStatus = "已忽略普通野外宝箱，未修改魔法罐候选点";
+            return;
+        }
+
+        var catalogCandidates = session.Round >= 2 ? catalog.SecondChanceCandidates : catalog.InitialCandidates;
+        var resolvedCandidateId = candidateId != 0
+            ? candidateId
+            : calibrationCandidateId != 0
+                ? calibrationCandidateId
+                : FocusedCandidate?.Id ?? (session.Candidates.Count == 1 ? session.Candidates[0].Id : 0);
+        var candidate = catalogCandidates.FirstOrDefault(item => item.Id == resolvedCandidateId);
+        if (candidate.Id == 0)
+        {
+            CandidateCalibrationStatus = "最近一次未校准：无法确定本轮使用的候选点";
+            log.Debug("No selected pot candidate is associated with opened treasure {ObjectId}.", treasure.GameObjectId);
             return;
         }
 
         calibratedTreasureObjectId = treasure.GameObjectId;
-        var match = ranked[0];
+        calibrationCandidateId = candidate.Id;
+        var distance = HorizontalDistance(candidate.Position, treasure.Position);
         var record = configuration.PotCandidateCalibrations.FirstOrDefault(item =>
-            item.TerritoryId == clientState.TerritoryType && item.CandidateId == match.Candidate.Id);
+            item.TerritoryId == clientState.TerritoryType && item.CandidateId == candidate.Id);
         if (record == null)
         {
             record = new PotCandidateCalibrationRecord
             {
                 TerritoryId = clientState.TerritoryType,
-                CandidateId = match.Candidate.Id,
+                CandidateId = candidate.Id,
                 X = treasure.Position.X,
                 Y = treasure.Position.Y,
                 Z = treasure.Position.Z,
@@ -440,33 +463,22 @@ public sealed unsafe class TreasureTracker : IDisposable
         }
         else
         {
-            var recordedPosition = new Vector3(record.X, record.Y, record.Z);
-            if (HorizontalDistance(recordedPosition, treasure.Position) > CalibrationRepeatRadius)
-            {
-                CandidateCalibrationStatus = "最近一次未校准：与既有记录偏差超过 3 米";
-                log.Warning(
-                    "Ignored outlying calibration for pot candidate {CandidateId} in territory {Territory}.",
-                    match.Candidate.Id, clientState.TerritoryType);
-                return;
-            }
-            var samples = Math.Clamp(record.SampleCount, 1, 20);
-            var divisor = samples + 1f;
-            record.X = (record.X * samples + treasure.Position.X) / divisor;
-            record.Y = (record.Y * samples + treasure.Position.Y) / divisor;
-            record.Z = (record.Z * samples + treasure.Position.Z) / divisor;
-            record.SampleCount = Math.Min(20, samples + 1);
+            record.X = treasure.Position.X;
+            record.Y = treasure.Position.Y;
+            record.Z = treasure.Position.Z;
+            record.SampleCount = Math.Min(20, Math.Max(1, record.SampleCount) + 1);
         }
 
         var calibratedPosition = new Vector3(record.X, record.Y, record.Z);
-        session.UpdateCandidatePosition(match.Candidate.Id, calibratedPosition);
-        if (FocusedCandidate?.Id == match.Candidate.Id)
-            FocusedCandidate = new PotCandidate(match.Candidate.Id, calibratedPosition);
+        session.UpdateCandidatePosition(candidate.Id, calibratedPosition);
+        if (FocusedCandidate?.Id == candidate.Id)
+            FocusedCandidate = new PotCandidate(candidate.Id, calibratedPosition);
         saveConfiguration();
         CandidateCalibrationStatus =
-            $"最近校准：候选 #{GetCandidateNumber(match.Candidate):D2} · 偏差 {match.Distance:F1} 米 · {record.SampleCount} 次样本";
+            $"已在开箱时覆盖候选 #{GetCandidateNumber(candidate):D2} 的真实坐标 · 原始偏差 {distance:F1} 米";
         log.Information(
             "Calibrated pot candidate {CandidateId} in territory {Territory}: offset {Offset:F1}m, samples {Samples}.",
-            match.Candidate.Id, clientState.TerritoryType, match.Distance, record.SampleCount);
+            candidate.Id, clientState.TerritoryType, distance, record.SampleCount);
     }
 
     private IEnumerable<PotCandidate> ApplyCandidateCalibrations(IEnumerable<PotCandidate> candidates)
@@ -479,6 +491,25 @@ public sealed unsafe class TreasureTracker : IDisposable
                 ? candidate
                 : candidate with { Position = new Vector3(record.X, record.Y, record.Z) };
         }
+    }
+
+    private bool IsFieldTreasurePosition(Vector3 position) =>
+        fieldTreasurePoints.Any(point => HorizontalDistanceSquared(point.Position, position) <= 3f * 3f) ||
+        configuration.ConfirmedFieldTreasures.Any(item =>
+            item.TerritoryId == clientState.TerritoryType &&
+            HorizontalDistanceSquared(new Vector3(item.X, item.Y, item.Z), position) <= 3f * 3f);
+
+    private void RemoveFieldTreasureContaminatedCalibrations()
+    {
+        if (fieldTreasurePoints.Count == 0) return;
+        var removed = configuration.PotCandidateCalibrations.RemoveAll(item =>
+            item.TerritoryId == clientState.TerritoryType &&
+            fieldTreasurePoints.Any(point => HorizontalDistanceSquared(
+                point.Position, new Vector3(item.X, item.Y, item.Z)) <= 3f * 3f));
+        if (removed == 0) return;
+        saveConfiguration();
+        RefreshCandidateUniverse();
+        CandidateCalibrationStatus = $"已移除 {removed} 条误用普通宝箱位置的候选点校准";
     }
 
     private void RefreshCandidateUniverse()

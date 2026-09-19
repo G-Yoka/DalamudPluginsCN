@@ -13,28 +13,33 @@ public sealed class MapDetailsWindow : Window
     private readonly PluginConfiguration configuration;
     private readonly TreasureTracker tracker;
     private readonly OccultEventTracker eventTracker;
+    private readonly EventAutomationService eventAutomationService;
     private readonly NavigationService navigationService;
     private readonly TreasureSurveyService treasureSurveyService;
     private readonly TreasureMapWindow mapWindow;
     private readonly Action openCeWatch;
     private readonly Action openFateWatch;
+    private readonly Action openAutomationTargets;
     private readonly Action save;
     private int page;
 
     public MapDetailsWindow(PluginConfiguration configuration, TreasureTracker tracker,
-        OccultEventTracker eventTracker, NavigationService navigationService,
+        OccultEventTracker eventTracker, EventAutomationService eventAutomationService,
+        NavigationService navigationService,
         TreasureSurveyService treasureSurveyService, TreasureMapWindow mapWindow,
-        Action openCeWatch, Action openFateWatch, Action save)
+        Action openCeWatch, Action openFateWatch, Action openAutomationTargets, Action save)
         : base("新月罗盘详情###CrescentCompass-MapDetails")
     {
         this.configuration = configuration;
         this.tracker = tracker;
         this.eventTracker = eventTracker;
+        this.eventAutomationService = eventAutomationService;
         this.navigationService = navigationService;
         this.treasureSurveyService = treasureSurveyService;
         this.mapWindow = mapWindow;
         this.openCeWatch = openCeWatch;
         this.openFateWatch = openFateWatch;
+        this.openAutomationTargets = openAutomationTargets;
         this.save = save;
         Flags = ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoMove;
         SizeConstraints = new WindowSizeConstraints
@@ -106,8 +111,9 @@ public sealed class MapDetailsWindow : Window
             switch (page)
             {
                 case 0: DrawEvents(); break;
-                case 1: DrawChests(); break;
-                case 2: DrawTreasure(); break;
+                case 1: DrawAutomation(); break;
+                case 2: DrawChests(); break;
+                case 3: DrawTreasure(); break;
                 default: DrawRoute(); break;
             }
         }
@@ -117,14 +123,53 @@ public sealed class MapDetailsWindow : Window
     private void DrawTabs()
     {
         var available = ImGui.GetContentRegionAvail().X;
-        var width = MathF.Max(46f, (available - ImGui.GetStyle().ItemSpacing.X * 3f) / 4f);
+        var width = MathF.Max(40f, (available - ImGui.GetStyle().ItemSpacing.X * 4f) / 5f);
         if (DrawTab("事件", page == 0, width)) page = 0;
         ImGui.SameLine();
-        if (DrawTab("宝箱", page == 1, width)) page = 1;
+        if (DrawTab("自动", page == 1, width)) page = 1;
         ImGui.SameLine();
-        if (DrawTab("寻宝", page == 2, width)) page = 2;
+        if (DrawTab("宝箱", page == 2, width)) page = 2;
         ImGui.SameLine();
-        if (DrawTab("路线", page == 3, width)) page = 3;
+        if (DrawTab("寻宝", page == 3, width)) page = 3;
+        ImGui.SameLine();
+        if (DrawTab("路线", page == 4, width)) page = 4;
+    }
+
+    private void DrawAutomation()
+    {
+        ImGui.TextColored(
+            eventAutomationService.Stage == EventAutomationStage.Suspended ? UiTheme.Error : UiTheme.Cyan,
+            StageLabel(eventAutomationService.Stage));
+        ImGui.TextWrapped(eventAutomationService.Status);
+        ImGui.TextDisabled($"当前目标 · {eventAutomationService.TargetLabel}");
+
+        if (configuration.EnableEventAutomation)
+        {
+            if (ImGui.Button("停止自动事件", new Vector2(-1f, 0f)))
+                eventAutomationService.Stop();
+            if (eventAutomationService.Stage == EventAutomationStage.Suspended &&
+                ImGui.Button("恢复自动事件", new Vector2(-1f, 0f)))
+                eventAutomationService.Resume();
+        }
+        else if (ImGui.Button("启动自动事件", new Vector2(-1f, 0f)))
+        {
+            configuration.EnableEventAutomation = true;
+            save();
+            eventAutomationService.Resume();
+        }
+
+        UiTheme.SectionTitle("等待点");
+        ImGui.TextUnformatted(eventAutomationService.WaitingPointLabel);
+        ImGui.TextDisabled(eventAutomationService.UsesDefaultWaitingPoint
+            ? "当前使用总部大水晶旁的默认等待点"
+            : "当前使用自定义等待点");
+        if (ImGui.Button("记录当前位置")) eventAutomationService.RecordCurrentWaitingPoint();
+        ImGui.SameLine();
+        if (ImGui.Button("恢复默认大水晶")) eventAutomationService.ClearCurrentWaitingPoint();
+
+        UiTheme.SectionTitle("参与范围");
+        ImGui.TextDisabled($"已选择 {configuration.AutomatedCeIds.Count} 个 CE、{configuration.AutomatedFateIds.Count} 个 FATE");
+        if (ImGui.Button("打开自动参与列表", new Vector2(-1f, 0f))) openAutomationTargets();
     }
 
     private void DrawChests()
@@ -221,7 +266,8 @@ public sealed class MapDetailsWindow : Window
             ImGui.SameLine();
             var nameWidth = ImGui.CalcTextSize(item.Name).X + ImGui.GetStyle().FramePadding.X * 2f;
             if (ImGui.Selectable($"{item.Name}##event", false, ImGuiSelectableFlags.None, new Vector2(nameWidth, 0f)))
-                navigationService.NavigateToEvent(item.Position, $"{EventKindName(item.Kind)}：{item.Name}");
+                navigationService.NavigateToEvent(item.Position, $"{EventKindName(item.Kind)}：{item.Name}",
+                    item.DataId, CustomRouteKind(item.Kind));
             if (!string.IsNullOrEmpty(item.RewardTag))
             {
                 ImGui.SameLine(0f, 4f * ImGuiHelpers.GlobalScale);
@@ -254,6 +300,14 @@ public sealed class MapDetailsWindow : Window
         if (ImGui.Button("打开 FATE 速查", new Vector2(-1f, 0f))) openFateWatch();
     }
 
+    private static CustomNavigationRouteKind? CustomRouteKind(OccultEventKind kind) => kind switch
+    {
+        OccultEventKind.CriticalEngagement => CustomNavigationRouteKind.CriticalEngagement,
+        OccultEventKind.Fate or OccultEventKind.MagicPot or OccultEventKind.MagicPotForecast =>
+            CustomNavigationRouteKind.Fate,
+        _ => null
+    };
+
     private void DrawRoute()
     {
         ImGui.TextDisabled("导航状态");
@@ -268,6 +322,7 @@ public sealed class MapDetailsWindow : Window
             ImGui.TextDisabled("未在导航");
             if (!string.IsNullOrWhiteSpace(navigationService.Status)) ImGui.TextWrapped(navigationService.Status);
         }
+
         UiTheme.SectionTitle("路线决策");
         ImGui.TextWrapped(navigationService.DecisionStatus);
         UiTheme.SectionTitle("路线图层");
@@ -285,6 +340,23 @@ public sealed class MapDetailsWindow : Window
     {
         OccultEventKind.CriticalEngagement => "CE", OccultEventKind.ForkTower => "两歧塔",
         OccultEventKind.MagicPot => "魔法罐", OccultEventKind.MagicPotForecast => "魔法罐预告", _ => "FATE"
+    };
+
+    private static string StageLabel(EventAutomationStage stage) => stage switch
+    {
+        EventAutomationStage.Disabled => "已停止",
+        EventAutomationStage.Waiting => "等待事件",
+        EventAutomationStage.Traveling => "前往事件",
+        EventAutomationStage.AwaitingStart => "等待开始",
+        EventAutomationStage.Participating => "参与中",
+        EventAutomationStage.Settling => "结算等待",
+        EventAutomationStage.Returning => "返回等待点",
+        EventAutomationStage.TravelingToMagicPot => "前往魔法罐预告点",
+        EventAutomationStage.WaitingForMagicPot => "等待魔法罐出现",
+        EventAutomationStage.AwaitingMagicPotReward => "确认魔法罐奖励",
+        EventAutomationStage.TreasureHunting => "自动寻找财宝",
+        EventAutomationStage.Suspended => "已暂停",
+        _ => stage.ToString()
     };
 
     private static Vector4 RewardTagColor(string tag) => tag switch

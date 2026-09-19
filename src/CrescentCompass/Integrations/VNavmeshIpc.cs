@@ -93,6 +93,18 @@ public sealed class VNavmeshIpc
         }
     }
 
+    public void CancelPathfinds()
+    {
+        try
+        {
+            if (cancelAllPathfinds.HasAction) cancelAllPathfinds.InvokeAction();
+        }
+        catch
+        {
+            // The optional plugin may disappear while unloading.
+        }
+    }
+
     public bool MoveAlong(List<Vector3> path)
     {
         try
@@ -124,10 +136,12 @@ public sealed class VNavmeshIpc
 
     public void Stop()
     {
-        var cancelSimpleMoveQuery = false;
+        var cancelOutstandingQuery = false;
         try
         {
-            cancelSimpleMoveQuery = pathfindInProgress.HasFunction && pathfindInProgress.InvokeFunc();
+            cancelOutstandingQuery =
+                pathfindInProgress.HasFunction && pathfindInProgress.InvokeFunc() ||
+                navPathfindInProgress.HasFunction && navPathfindInProgress.InvokeFunc();
         }
         catch
         {
@@ -145,7 +159,7 @@ public sealed class VNavmeshIpc
         {
             // SimpleMove can finish its background query after Path.Stop and start moving again.
             // Cancel that outstanding query as well so manual input is final.
-            if (cancelSimpleMoveQuery && cancelAllPathfinds.HasAction) cancelAllPathfinds.InvokeAction();
+            if (cancelOutstandingQuery) CancelPathfinds();
         }
         catch
         {

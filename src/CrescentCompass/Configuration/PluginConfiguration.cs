@@ -1,3 +1,4 @@
+using CrescentCompass.Core;
 using Dalamud.Configuration;
 
 namespace CrescentCompass.Configuration;
@@ -5,7 +6,8 @@ namespace CrescentCompass.Configuration;
 [Serializable]
 public sealed class PluginConfiguration : IPluginConfiguration
 {
-    public int Version { get; set; } = 12;
+    public const int CurrentVersion = 15;
+    public int Version { get; set; } = CurrentVersion;
     public bool ShowMainWindow { get; set; } = true;
     public bool ShowOverlay { get; set; } = true;
     public bool ShowCandidateIndicators { get; set; } = true;
@@ -79,6 +81,21 @@ public sealed class PluginConfiguration : IPluginConfiguration
     public bool PauseProminentBannerOnHover { get; set; } = true;
     public bool ShowProminentBannerNavigateButton { get; set; } = true;
     public bool NotifyCeOnEntry { get; set; } = true;
+    public bool EnableEventAutomation { get; set; }
+    public HashSet<uint> AutomatedCeIds { get; set; } = [];
+    public HashSet<uint> AutomatedFateIds { get; set; } = [];
+    public EventAutomationPriority EventAutomationPriority { get; set; } = EventAutomationPriority.CeFirst;
+    public int EventAutomationMinimumRemainingSeconds { get; set; } = 120;
+    public int EventAutomationMaximumFateProgress { get; set; } = 70;
+    public float EventAutomationArrivalRadius { get; set; } = 35f;
+    public float EventAutomationSettleSeconds { get; set; } = 5f;
+    public EventMechanicProvider EventMechanicProvider { get; set; } = EventMechanicProvider.BossModReborn;
+    public CombatRotationProvider CombatRotationProvider { get; set; } = CombatRotationProvider.AEAssistV3;
+    public string BossModAutomationPreset { get; set; } = string.Empty;
+    public List<EventAutomationWaitingPoint> EventAutomationWaitingPoints { get; set; } = [];
+    public List<CustomNavigationRoute> CustomNavigationRoutes { get; set; } = [];
+    public bool UseCustomRoutesForAutomation { get; set; } = true;
+    public bool UseCustomRoutesForManualNavigation { get; set; } = true;
     public List<ConfirmedFieldTreasureRecord> ConfirmedFieldTreasures { get; set; } = [];
     public bool AutoCalibratePotCandidates { get; set; } = true;
     public List<PotCandidateCalibrationRecord> PotCandidateCalibrations { get; set; } = [];
@@ -134,7 +151,30 @@ public sealed class PluginConfiguration : IPluginConfiguration
             EventNotificationSoundEffect = 1;
             Version = 12;
         }
-        Version = Math.Max(12, Version);
+        if (Version < 13)
+        {
+            EnableEventAutomation = false;
+            EventAutomationPriority = EventAutomationPriority.CeFirst;
+            EventAutomationMinimumRemainingSeconds = 120;
+            EventAutomationMaximumFateProgress = 70;
+            EventAutomationArrivalRadius = 35f;
+            EventAutomationSettleSeconds = 5f;
+            EventMechanicProvider = EventMechanicProvider.BossModReborn;
+            CombatRotationProvider = CombatRotationProvider.AEAssistV3;
+            Version = 13;
+        }
+        if (Version < 14)
+        {
+            CustomNavigationRoutes = [];
+            Version = 14;
+        }
+        if (Version < 15)
+        {
+            UseCustomRoutesForAutomation = true;
+            UseCustomRoutesForManualNavigation = true;
+            Version = 15;
+        }
+        Version = Math.Max(CurrentVersion, Version);
         DirectNavigationDistance = Math.Clamp(DirectNavigationDistance, 0f, 300f);
         MinimumTeleportSavingSeconds = Math.Clamp(MinimumTeleportSavingSeconds, 0f, 60f);
         AverageDemiReturnSeconds = Math.Clamp(AverageDemiReturnSeconds, 1f, 35f);
@@ -151,6 +191,10 @@ public sealed class PluginConfiguration : IPluginConfiguration
         AggroVerticalTolerance = Math.Clamp(AggroVerticalTolerance, 1f, 20f);
         EventNavigationRandomRadius = Math.Clamp(EventNavigationRandomRadius, 2f, 15f);
         EventNotificationSoundEffect = Math.Clamp(EventNotificationSoundEffect, 1, 16);
+        EventAutomationMinimumRemainingSeconds = Math.Clamp(EventAutomationMinimumRemainingSeconds, 30, 900);
+        EventAutomationMaximumFateProgress = Math.Clamp(EventAutomationMaximumFateProgress, 10, 95);
+        EventAutomationArrivalRadius = Math.Clamp(EventAutomationArrivalRadius, 10f, 80f);
+        EventAutomationSettleSeconds = Math.Clamp(EventAutomationSettleSeconds, 2f, 15f);
         MaxSceneCandidates = Math.Clamp(MaxSceneCandidates, 1, 12);
         IndicatorRadius = Math.Clamp(IndicatorRadius, 50f, 1000f);
         FieldTreasureIndicatorRadius = Math.Clamp(FieldTreasureIndicatorRadius, 20f, 1000f);
@@ -179,12 +223,94 @@ public sealed class PluginConfiguration : IPluginConfiguration
         if (!Enum.IsDefined(ProminentBannerDetail)) ProminentBannerDetail = EventBannerDetail.Standard;
         WatchedCeIds ??= [];
         WatchedFateIds ??= [];
+        AutomatedCeIds ??= [];
+        AutomatedFateIds ??= [];
+        BossModAutomationPreset ??= string.Empty;
+        EventAutomationWaitingPoints ??= [];
+        EventAutomationWaitingPoints.RemoveAll(item =>
+            item.TerritoryId is not PotCandidateCatalog.SouthHornTerritoryId and
+                not PotCandidateCatalog.NorthHornTerritoryId ||
+            !float.IsFinite(item.X) || !float.IsFinite(item.Y) || !float.IsFinite(item.Z));
+        CustomNavigationRoutes ??= [];
+        CustomNavigationRoutes.RemoveAll(route =>
+            string.IsNullOrWhiteSpace(route.Id) || route.TerritoryId is not PotCandidateCatalog.SouthHornTerritoryId and
+                not PotCandidateCatalog.NorthHornTerritoryId || route.SourceAetheryteDataId == 0 ||
+            route.EventId == 0 || !Enum.IsDefined(route.Kind) || route.Points == null || route.Points.Count < 2 ||
+            route.Points.Any(point => !float.IsFinite(point.X) || !float.IsFinite(point.Y) || !float.IsFinite(point.Z)));
+        if (!Enum.IsDefined(EventAutomationPriority)) EventAutomationPriority = EventAutomationPriority.CeFirst;
+        if (!Enum.IsDefined(EventMechanicProvider)) EventMechanicProvider = EventMechanicProvider.BossModReborn;
+        if (!Enum.IsDefined(CombatRotationProvider)) CombatRotationProvider = CombatRotationProvider.AEAssistV3;
         ConfirmedFieldTreasures ??= [];
         PotCandidateCalibrations ??= [];
         PotCandidateCalibrations.RemoveAll(item =>
             item.CandidateId == 0 || item.SampleCount <= 0 ||
             !float.IsFinite(item.X) || !float.IsFinite(item.Y) || !float.IsFinite(item.Z));
     }
+}
+
+public enum EventAutomationPriority
+{
+    CeFirst,
+    FateFirst,
+    Nearest,
+    MagicPotFirst
+}
+
+public enum EventMechanicProvider
+{
+    None,
+    BossModReborn
+}
+
+public enum CombatRotationProvider
+{
+    None,
+    AEAssistV3,
+    PromeRotation,
+    RotationSolverReborn,
+    BossModReborn
+}
+
+[Serializable]
+public sealed class EventAutomationWaitingPoint
+{
+    public uint TerritoryId { get; set; }
+    public float X { get; set; }
+    public float Y { get; set; }
+    public float Z { get; set; }
+}
+
+public enum CustomNavigationRouteKind
+{
+    Fate,
+    CriticalEngagement
+}
+
+[Serializable]
+public sealed class CustomNavigationRoute
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public uint TerritoryId { get; set; }
+    public uint SourceAetheryteDataId { get; set; }
+    public CustomNavigationRouteKind Kind { get; set; }
+    public uint EventId { get; set; }
+    public string EventName { get; set; } = string.Empty;
+    public List<CustomNavigationRoutePoint> Points { get; set; } = [];
+}
+
+[Serializable]
+public sealed class CustomNavigationRoutePoint
+{
+    public float X { get; set; }
+    public float Y { get; set; }
+    public float Z { get; set; }
+    public CustomNavigationRoutePointAction Action { get; set; }
+}
+
+public enum CustomNavigationRoutePointAction
+{
+    None,
+    Jump
 }
 
 [Serializable]

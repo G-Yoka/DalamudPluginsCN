@@ -146,8 +146,10 @@ public sealed class TreasureMapWindow : Window
         if (configuration.ShowConfirmedFieldTreasureMapMarkers)
             DrawConfirmedFieldTreasures(draw, renderedOrigin, renderedSize, alpha);
 
-        if (configuration.ShowMapRouteLayer)
+        if (configuration.ShowMapRouteLayer || navigationService.IsRecordingCustomRoute)
             DrawNavigationPath(draw, renderedOrigin, renderedSize, alpha);
+
+        DrawRouteRecordingDestination(draw, renderedOrigin, renderedSize, alpha);
 
         DrawAetheryteHitTargets(draw, renderedOrigin, renderedSize);
 
@@ -332,7 +334,8 @@ public sealed class TreasureMapWindow : Window
             ImGui.SameLine();
             var nameWidth = ImGui.CalcTextSize(item.Name).X + ImGui.GetStyle().FramePadding.X * 2f;
             if (ImGui.Selectable($"{item.Name}##inline-event", false, ImGuiSelectableFlags.None, new Vector2(nameWidth, 0f)))
-                navigationService.NavigateToEvent(item.Position, $"{EventKindName(item.Kind)}：{item.Name}");
+                navigationService.NavigateToEvent(item.Position, $"{EventKindName(item.Kind)}：{item.Name}",
+                    item.DataId, CustomRouteKind(item.Kind));
             if (!string.IsNullOrEmpty(item.RewardTag))
             {
                 ImGui.SameLine(0f, 4f * ImGuiHelpers.GlobalScale);
@@ -405,6 +408,21 @@ public sealed class TreasureMapWindow : Window
         var color = Pack(90, 214, 230, (byte)Math.Min(alpha, (byte)220));
         for (var index = 1; index < path.Count; index++)
             draw.AddLine(WorldToCanvas(path[index - 1], origin, size), WorldToCanvas(path[index], origin, size), color, 2.5f);
+    }
+
+    private void DrawRouteRecordingDestination(ImDrawListPtr draw, Vector2 origin, Vector2 size, byte alpha)
+    {
+        if (!navigationService.IsRecordingCustomRoute ||
+            navigationService.RecordingDestination is not { } destination)
+            return;
+        var center = WorldToCanvas(destination, origin, size);
+        var color = Pack(255, 205, 70, alpha);
+        var scale = ImGuiHelpers.GlobalScale;
+        var pulse = configuration.ReduceMotion ? 0f : (float)(ImGui.GetTime() % 1.2) / 1.2f * 10f;
+        draw.AddCircle(center, 10f * scale + pulse, color, 28, 2.5f * scale);
+        draw.AddCircleFilled(center, 4f * scale, color, 16);
+        draw.AddLine(center, center + new Vector2(0f, -22f * scale), color, 2f * scale);
+        draw.AddText(center + new Vector2(7f, -34f) * scale, color, "路线终点");
     }
 
     private IEnumerable<(Vector3 Position, int Index)> PartyMembers()
@@ -672,7 +690,8 @@ public sealed class TreasureMapWindow : Window
         if (activeEvent.Event.DataId != 0)
         {
             navigationService.NavigateToEvent(activeEvent.Event.Position,
-                $"{EventKindName(activeEvent.Event.Kind)}：{activeEvent.Event.Name}");
+                $"{EventKindName(activeEvent.Event.Kind)}：{activeEvent.Event.Name}",
+                activeEvent.Event.DataId, CustomRouteKind(activeEvent.Event.Kind));
             return;
         }
 
@@ -699,6 +718,14 @@ public sealed class TreasureMapWindow : Window
             .FirstOrDefault();
         if (closest.Candidate.Id != 0) tracker.Focus(closest.Candidate.Id);
     }
+
+    private static CustomNavigationRouteKind? CustomRouteKind(OccultEventKind kind) => kind switch
+    {
+        OccultEventKind.CriticalEngagement => CustomNavigationRouteKind.CriticalEngagement,
+        OccultEventKind.Fate or OccultEventKind.MagicPot or OccultEventKind.MagicPotForecast =>
+            CustomNavigationRouteKind.Fate,
+        _ => null
+    };
 
     private void DrawActiveEvent(
         ImDrawListPtr draw,

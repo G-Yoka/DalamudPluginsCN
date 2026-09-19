@@ -16,6 +16,7 @@ public sealed unsafe class SceneOverlayRenderer
     private readonly PluginConfiguration configuration;
     private readonly TreasureTracker tracker;
     private readonly OccultEventTracker eventTracker;
+    private readonly NavigationService navigationService;
     private readonly IGameGui gameGui;
     private readonly ICondition condition;
     private readonly IObjectTable objectTable;
@@ -27,6 +28,7 @@ public sealed unsafe class SceneOverlayRenderer
         PluginConfiguration configuration,
         TreasureTracker tracker,
         OccultEventTracker eventTracker,
+        NavigationService navigationService,
         IGameGui gameGui,
         ICondition condition,
         IObjectTable objectTable,
@@ -35,6 +37,7 @@ public sealed unsafe class SceneOverlayRenderer
         this.configuration = configuration;
         this.tracker = tracker;
         this.eventTracker = eventTracker;
+        this.navigationService = navigationService;
         this.gameGui = gameGui;
         this.condition = condition;
         this.objectTable = objectTable;
@@ -50,6 +53,16 @@ public sealed unsafe class SceneOverlayRenderer
 
         occupiedLabels.Clear();
         var draw = ImGui.GetBackgroundDrawList();
+
+        if (navigationService.IsRecordingCustomRoute &&
+            navigationService.RecordingDestination is { } routeDestination)
+        {
+            var ground = ResolveDisplayPosition(0x7fffffffu, routeDestination, player);
+            var resolved = ground ?? new Vector3(routeDestination.X, player.Y, routeDestination.Z);
+            DrawWorldLabel(draw, resolved,
+                $"路线录制终点\n{DistanceAndHeight(player, resolved)}",
+                Pack(255, 205, 70, 255), 1.2f);
+        }
 
         if (configuration.ShowMonsterAggroRanges)
             DrawMonsterAggroRanges(draw, player);

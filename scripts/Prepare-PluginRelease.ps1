@@ -59,6 +59,10 @@ try {
 
     $manifestPath = Join-Path $repositoryRoot "plugins/$InternalName/manifest.json"
     $manifest = Get-Content -Raw $manifestPath | ConvertFrom-Json
+    if ($null -eq $manifest.PSObject.Properties['Changelog'] -or
+        [string]::IsNullOrWhiteSpace([string]$manifest.Changelog)) {
+        throw "plugins/$InternalName/manifest.json must define a non-empty Changelog before release."
+    }
     $packedManifest = Get-Content -Raw $packedManifestPath | ConvertFrom-Json
     $releaseTag = "$InternalName-v$version"
     $downloadUrl = "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/$releaseTag/$InternalName.zip"

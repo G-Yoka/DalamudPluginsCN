@@ -134,7 +134,10 @@ public sealed unsafe class OccultEventTracker : IDisposable
                 kind,
                 $"进度 {fate.Progress}% · 剩余 {FormatDuration(fate.TimeRemaining)}",
                 OccultEventRewardCatalog.FateTag(territoryId, fate.FateId),
-                true));
+                true,
+                OccultEventPhase.Battle,
+                fate.Progress,
+                fate.TimeRemaining));
         }
 
         AddMagicPotForecast(territoryId);
@@ -177,7 +180,18 @@ public sealed unsafe class OccultEventTracker : IDisposable
                 kind == OccultEventKind.CriticalEngagement
                     ? OccultEventRewardCatalog.CriticalEncounterTag(territoryId, id)
                     : string.Empty,
-                dynamicEvent.State is DynamicEventState.Register or DynamicEventState.Warmup));
+                dynamicEvent.State is DynamicEventState.Register or DynamicEventState.Warmup,
+                dynamicEvent.State switch
+                {
+                    DynamicEventState.Register => OccultEventPhase.Register,
+                    DynamicEventState.Warmup => OccultEventPhase.Warmup,
+                    DynamicEventState.Battle => OccultEventPhase.Battle,
+                    _ => OccultEventPhase.Unknown
+                },
+                dynamicEvent.Progress,
+                dynamicEvent.State == DynamicEventState.Register
+                    ? Math.Max(0, dynamicEvent.StartTimestamp - DateTimeOffset.UtcNow.ToUnixTimeSeconds())
+                    : 0));
         }
     }
 
@@ -299,6 +313,14 @@ public enum OccultEventKind
     MagicPotForecast
 }
 
+public enum OccultEventPhase
+{
+    Unknown,
+    Register,
+    Warmup,
+    Battle
+}
+
 public readonly record struct OccultEventSnapshot(
     uint DataId,
     string Name,
@@ -307,4 +329,7 @@ public readonly record struct OccultEventSnapshot(
     OccultEventKind Kind,
     string StateText,
     string RewardTag = "",
-    bool IsJoinable = false);
+    bool IsJoinable = false,
+    OccultEventPhase Phase = OccultEventPhase.Unknown,
+    int Progress = 0,
+    long RemainingSeconds = 0);

@@ -24,7 +24,17 @@ public sealed unsafe class NavigationService : IDisposable
     private const float CrystalCampRadius = 100f;
     private const float PathOriginReplanDistance = 2.5f;
     private const int MaxPathOriginReplans = 2;
+    private const long PathPlanningFallbackMilliseconds = 8_000;
     private const long RouteDecisionWindowMilliseconds = 3_000;
+    private const long CrystalNavigationRetryMilliseconds = 1_000;
+    private const float CrystalNavigationArrivalRadius = 0.75f;
+    private const float CrystalInteractionPadding = 1f;
+    private const float CrystalStuckRecoverySuppressionRadius = 15f;
+    private const long NavigationIdleConfirmationMilliseconds = 750;
+    private const float RouteRecordingArrivalRadius = 8f;
+    private const long RouteRecordingArrivalConfirmationMilliseconds = 750;
+    private const float CustomRouteJumpTriggerRadius = 2.25f;
+    private const long CustomRouteJumpRetryMilliseconds = 700;
     private const long StuckSampleMilliseconds = 1_000;
     private const float StuckMovementDistance = 1f;
     private const float StuckRecoveryClearDistance = 3f;
@@ -42,24 +52,29 @@ public sealed unsafe class NavigationService : IDisposable
     private CancellationTokenSource? pathCancellation;
     private Task<List<Vector3>>? pathTask;
     private Vector3 pathOrigin;
+    private Vector3 pathRequestPlayerPosition;
     private Vector3 pathNavigationPoint;
     private int pathOriginReplans;
     private bool active;
     private bool ownsMovingPath;
     private bool observedBusy;
+    private long navigationIdleSince;
     private long startedAt;
     private Vector3 destination;
+    private Vector3 requestedDestination;
     private Vector3? eventNavigationTarget;
     private string targetName = string.Empty;
     private CrescentAetheryte? pendingAetheryte;
     private CrescentAetheryte? sourceAetheryte;
     private string pendingAetheryteName = string.Empty;
     private long nextInteractionAt;
+    private long nextCrystalNavigationAt;
     private long teleportDeadline;
     private bool demiReturnPending;
     private bool demiReturnAccepted;
     private bool demiReturnSawCasting;
     private bool demiReturnSawTransition;
+    private bool completeAtCampAfterDemiReturn;
     private Vector3 demiReturnOrigin;
     private long demiReturnStartedAt;
     private long nextDemiReturnAt;
@@ -88,6 +103,22 @@ public sealed unsafe class NavigationService : IDisposable
     private int recoverySide;
     private uint recoveryTerritory;
     private readonly Dictionary<RecoveryCell, RecoveryMemory> recoveryMemory = [];
+    private readonly List<RecordedRouteSample> recordedRouteSamples = [];
+    private uint recordedRouteTerritory;
+    private uint recordedRouteSourceAetheryte;
+    private uint recordedRouteEventId;
+    private CustomNavigationRouteKind recordedRouteKind;
+    private string recordedRouteEventName = string.Empty;
+    private Vector3? recordedRouteDestination;
+    private long recordedRouteArrivalSince;
+    private long nextRouteRecordSample;
+    private bool recordingWasJumping;
+    private readonly List<Vector3> activeCustomRouteJumps = [];
+    private readonly List<Vector3> activeCustomRoutePath = [];
+    private uint activeCustomRouteEventId;
+    private int activeCustomRouteJumpIndex;
+    private int customRouteRestartAttempts;
+    private long customRouteJumpRequestedAt;
 
     public NavigationService(
         PluginConfiguration configuration,
@@ -119,10 +150,145 @@ public sealed unsafe class NavigationService : IDisposable
     public bool IsNavigating => active || pendingAetheryte != null || routePlan != null || arrivalFollowUp != null;
     public Vector3? ActiveDestination => eventNavigationTarget ??
         (active ? destination : routePlan?.FollowUp.Position ?? pendingFollowUp?.Position);
+    public Vector3 ResolvedDestination => destination;
     public IReadOnlyList<Vector3> DisplayPath => displayPath;
     public bool IsVnavmeshReady => vnavmesh.IsAvailable();
+    public bool IsFollowingCustomRoute => active && activeCustomRoutePath.Count > 1;
+    public uint CurrentCustomRouteEventId => activeCustomRouteEventId != 0
+        ? activeCustomRouteEventId
+        : pendingFollowUp?.CustomRoute?.EventId ?? arrivalFollowUp?.CustomRoute?.EventId ?? 0;
+    public bool IsRecordingCustomRoute => recordedRouteEventId != 0;
+    public uint RecordingEventId => recordedRouteEventId;
+    public CustomNavigationRouteKind RecordingRouteKind => recordedRouteKind;
+    public Vector3? RecordingDestination => recordedRouteDestination;
+    public IReadOnlyList<CustomNavigationRoute> AllNavigationRoutes
+    {
+        get
+        {
+            var userKeys = configuration.CustomNavigationRoutes
+                .Select(RouteKey)
+                .ToHashSet();
+            return configuration.CustomNavigationRoutes
+                .Concat(BuiltInNavigationRouteLibrary.Routes.Where(route => !userKeys.Contains(RouteKey(route))))
+                .ToArray();
+        }
+    }
+    public string RouteRecordingStatus { get; private set; } = "尚未录制自定义路线";
 
-    public bool NavigateToEvent(Vector3 target, string name)
+    public IReadOnlyList<CustomNavigationRoute> EffectiveNavigationRoutes(
+        uint territoryId,
+        uint eventId,
+        CustomNavigationRouteKind kind)
+    {
+        var userRoutes = configuration.CustomNavigationRoutes
+            .Where(route => RouteMatches(route, territoryId, eventId, kind))
+            .ToArray();
+        return userRoutes.Length > 0
+            ? userRoutes
+            : BuiltInNavigationRouteLibrary.Routes
+                .Where(route => RouteMatches(route, territoryId, eventId, kind))
+                .ToArray();
+    }
+
+    public static bool IsBuiltInRoute(CustomNavigationRoute route) =>
+        BuiltInNavigationRouteLibrary.IsBuiltIn(route);
+
+    public bool BeginCustomRouteRecording(uint territoryId, uint eventId,
+        CustomNavigationRouteKind kind, string eventName, Vector3? eventDestination = null)
+    {
+        if (territoryId != tracker.TerritoryId || tracker.PlayerPosition is not { } player)
+        {
+            RouteRecordingStatus = "请先进入该事件所在的新月岛区域";
+            return false;
+        }
+        var source = CrescentAetheryteCatalog.ForTerritory(territoryId)
+            .OrderBy(item => HorizontalDistanceSquared(item.Position, player))
+            .FirstOrDefault();
+        if (source.DataId == 0 || HorizontalDistanceSquared(source.Position, player) > 55f * 55f)
+        {
+            RouteRecordingStatus = "请在目标传送点落地位置附近开始录制";
+            return false;
+        }
+
+        Cancel(null);
+        recordedRouteSamples.Clear();
+        recordedRouteSamples.Add(new RecordedRouteSample(player, false, false));
+        displayPath = recordedRouteSamples.Select(item => item.Position).ToArray();
+        recordedRouteTerritory = territoryId;
+        recordedRouteSourceAetheryte = source.DataId;
+        recordedRouteEventId = eventId;
+        recordedRouteKind = kind;
+        recordedRouteEventName = eventName;
+        recordedRouteDestination = eventDestination;
+        recordedRouteArrivalSince = 0;
+        nextRouteRecordSample = 0;
+        recordingWasJumping = condition[ConditionFlag.Jumping];
+        RouteRecordingStatus = eventDestination == null
+            ? $"正在录制 {source.FallbackName} → {eventName} · 终点未知，请手动保存"
+            : $"正在录制 {source.FallbackName} → {eventName} · 距终点 {HorizontalDistance(player, eventDestination.Value):F0}m";
+        return true;
+    }
+
+    public bool FinishCustomRouteRecording()
+    {
+        if (!IsRecordingCustomRoute || tracker.PlayerPosition is not { } player) return false;
+        AddRecordedRoutePoint(player, 0.5f, condition[ConditionFlag.Jumping]);
+        var savedPoints = BuildRecordedRoutePoints();
+        if (savedPoints.Count < 2 || PathDistance(ToVector(savedPoints[0]), savedPoints.Select(ToVector).ToList()) < 5f)
+        {
+            RouteRecordingStatus = "路线过短，未保存";
+            ClearRouteRecording();
+            return false;
+        }
+        var route = new CustomNavigationRoute
+        {
+            TerritoryId = recordedRouteTerritory,
+            SourceAetheryteDataId = recordedRouteSourceAetheryte,
+            Kind = recordedRouteKind,
+            EventId = recordedRouteEventId,
+            EventName = recordedRouteEventName,
+            Points = savedPoints
+        };
+        configuration.CustomNavigationRoutes.Add(route);
+        save();
+        var pointCount = route.Points.Count;
+        var name = route.EventName;
+        ClearRouteRecording();
+        RouteRecordingStatus = $"已保存前往 {name} 的完整路线 · {pointCount} 点";
+        return true;
+    }
+
+    public void CancelCustomRouteRecording()
+    {
+        if (!IsRecordingCustomRoute) return;
+        ClearRouteRecording();
+        RouteRecordingStatus = "已取消路线录制";
+    }
+
+    public void DeleteCustomRoute(string routeId)
+    {
+        if (configuration.CustomNavigationRoutes.RemoveAll(route => route.Id == routeId) == 0) return;
+        save();
+        RouteRecordingStatus = "已删除自定义路线";
+    }
+
+    public bool TestCustomRoute(string routeId)
+    {
+        var route = configuration.CustomNavigationRoutes
+                        .Concat(BuiltInNavigationRouteLibrary.Routes)
+                        .FirstOrDefault(item => item.Id == routeId);
+        if (route == null || route.TerritoryId != tracker.TerritoryId ||
+            tracker.PlayerPosition is not { } player || route.Points.Count < 2)
+        {
+            Status = "请先进入该路线所在的新月岛区域";
+            return false;
+        }
+        var endpoint = ToVector(route.Points[^1]);
+        return BeginCustomEventRoute(route, endpoint, endpoint, $"测试路线：{route.EventName}", player, false);
+    }
+
+    public bool NavigateToEvent(Vector3 target, string name, uint eventId = 0,
+        CustomNavigationRouteKind? routeKind = null, bool automaticRequest = false)
     {
         if (IsNavigating && (eventNavigationTarget ?? ActiveDestination) is { } currentTarget &&
             HorizontalDistanceSquared(currentTarget, target) < 1f)
@@ -133,6 +299,17 @@ public sealed unsafe class NavigationService : IDisposable
         Cancel(null);
         if (tracker.PlayerPosition is not { } player) return false;
         var destinationPoint = vnavmesh.IsAvailable() ? ResolveDestinationPoint(target) : target;
+        var randomizedEventEndpoint = configuration.RandomizeEventNavigationDestination &&
+                                      destinationPoint is { } eventEndpoint &&
+                                      HorizontalDistanceSquared(eventEndpoint, target) >= 1.5f * 1.5f;
+        var useCustomRoute = automaticRequest
+            ? configuration.UseCustomRoutesForAutomation
+            : configuration.UseCustomRoutesForManualNavigation;
+        if (useCustomRoute && eventId != 0 && routeKind is { } kind &&
+            SelectCustomRoute(eventId, kind, player) is { } customRoute &&
+            BeginCustomEventRoute(customRoute, target, destinationPoint ?? target, name, player,
+                randomizedEventEndpoint))
+            return true;
         if (configuration.DirectNavigationDistance > 0f &&
             HorizontalDistanceSquared(player, target) <=
             configuration.DirectNavigationDistance * configuration.DirectNavigationDistance)
@@ -143,7 +320,7 @@ public sealed unsafe class NavigationService : IDisposable
         if (!vnavmesh.IsAvailable())
         {
             return RememberEventTarget(
-                FallBackFromRouteComparison(target, name, player, "vnavmesh 尚未就绪"), target);
+                FallBackFromRouteComparison(target, target, name, player, "vnavmesh 尚未就绪"), target);
         }
         var sources = CrescentAetheryteCatalog.ForTerritory(
             tracker.AreaName == "新月岛北部"
@@ -151,35 +328,39 @@ public sealed unsafe class NavigationService : IDisposable
                 : Core.PotCandidateCatalog.SouthHornTerritoryId);
         if (destinationPoint is not { } resolved || sources.Count == 0)
             return RememberEventTarget(
-                FallBackFromRouteComparison(target, name, player, "目标附近没有可比较落点"), target);
+                FallBackFromRouteComparison(target, target, name, player, "目标附近没有可比较落点"), target);
 
         var cancellation = new CancellationTokenSource();
         // Submit the direct route first so the most important baseline is not queued behind every crystal query.
-        var directTask = vnavmesh.Pathfind(player, resolved, cancellation.Token);
-        var routes = sources.OrderBy(source => HorizontalDistanceSquared(source.Position, resolved)).Select(source =>
+        var directTask = ObservePathTask(vnavmesh.Pathfind(player, resolved, cancellation.Token));
+        var routes = sources.OrderBy(source => HorizontalDistanceSquared(source.Position, resolved)).Take(2).Select(source =>
         {
             var origin = vnavmesh.QueryNearestReachable(source.Position, 8f, 80f) ?? source.Position;
-            return (source, origin, path: vnavmesh.Pathfind(origin, resolved, cancellation.Token));
+            return (source, origin, path: ObservePathTask(vnavmesh.Pathfind(origin, resolved, cancellation.Token)));
         }).Where(route => route.path != null).ToArray();
         if (routes.Length == 0 || directTask == null)
         {
             cancellation.Cancel();
             cancellation.Dispose();
             return RememberEventTarget(
-                FallBackFromRouteComparison(target, name, player, "无法提交完整路线比较"), target);
+                FallBackFromRouteComparison(target, resolved, name, player, "无法提交完整路线比较"), target);
         }
 
         var nearCrystal = sources.Any(source => HorizontalDistanceSquared(player, source.Position) <= 12f * 12f);
         var actionManager = ActionManager.Instance();
         var demiReturnAvailable = !IsInsideCrystalCamp(player, sources) && actionManager != null &&
                                   actionManager->GetActionStatus(ActionType.Action, DemiReturnActionId) == 0;
-        // Walking to a distant source cannot normally beat the closest sources. Comparing the nearest two retains
-        // an obstacle-aware alternative while avoiding another full set of expensive path queries.
+        // The crystal used to enter the teleport network is independent from the crystal nearest the destination.
+        // Compare nearby access crystals separately; reusing destination-side candidates would count a walk across
+        // the island before teleporting and grossly overestimate the transfer route.
         var approaches = nearCrystal
             ? []
-            : routes.OrderBy(route => HorizontalDistanceSquared(player, route.origin)).Take(2).Select(route =>
-                (route.source, origin: player,
-                    path: vnavmesh.Pathfind(player, route.origin, cancellation.Token)))
+            : sources.OrderBy(source => HorizontalDistanceSquared(player, source.Position)).Take(2).Select(source =>
+            {
+                var destination = vnavmesh.QueryNearestReachable(source.Position, 8f, 80f) ?? source.Position;
+                return (source, origin: player,
+                    path: ObservePathTask(vnavmesh.Pathfind(player, destination, cancellation.Token)));
+            })
                 .Where(route => route.path != null)
                 .ToArray();
         var followUp = new NavigationFollowUp(target, resolved, name);
@@ -202,13 +383,172 @@ public sealed unsafe class NavigationService : IDisposable
         return true;
     }
 
+    private CustomNavigationRoute? SelectCustomRoute(uint eventId, CustomNavigationRouteKind kind, Vector3 player)
+    {
+        var sources = CrescentAetheryteCatalog.ForTerritory(tracker.TerritoryId);
+        return EffectiveNavigationRoutes(tracker.TerritoryId, eventId, kind)
+            .Where(route => route.Points.Count >= 2 &&
+                            sources.Any(source => source.DataId == route.SourceAetheryteDataId))
+            .OrderBy(route =>
+            {
+                var source = sources.First(item => item.DataId == route.SourceAetheryteDataId);
+                var routeLength = RouteLength(route.Points);
+                return HorizontalDistanceSquared(player, source.Position) <= CrystalCampRadius * CrystalCampRadius
+                    ? routeLength
+                    : routeLength + 300f;
+            })
+            .FirstOrDefault();
+    }
+
+    private static bool RouteMatches(
+        CustomNavigationRoute route,
+        uint territoryId,
+        uint eventId,
+        CustomNavigationRouteKind kind) =>
+        route.TerritoryId == territoryId && route.EventId == eventId && route.Kind == kind;
+
+    private static (uint TerritoryId, uint EventId, CustomNavigationRouteKind Kind) RouteKey(
+        CustomNavigationRoute route) =>
+        (route.TerritoryId, route.EventId, route.Kind);
+
+    private bool BeginCustomEventRoute(CustomNavigationRoute route, Vector3 eventTarget,
+        Vector3 navigationEndpoint, string name, Vector3 player, bool replaceRecordedEndpoint)
+    {
+        var source = CrescentAetheryteCatalog.ForTerritory(route.TerritoryId)
+            .FirstOrDefault(item => item.DataId == route.SourceAetheryteDataId);
+        if (source.DataId == 0) return false;
+        var first = ToVector(route.Points[0]);
+        if (HorizontalDistanceSquared(player, source.Position) <= 55f * 55f &&
+            HorizontalDistanceSquared(player, first) <= 25f * 25f)
+            return StartCustomRoute(route, eventTarget, navigationEndpoint, name, replaceRecordedEndpoint);
+
+        var followUp = new NavigationFollowUp(eventTarget, navigationEndpoint, name, route,
+            replaceRecordedEndpoint);
+        var started = BeginAetheryteTravel(source, source.FallbackName, followUp);
+        eventNavigationTarget = started ? eventTarget : null;
+        if (started)
+        {
+            DecisionStatus = $"{tracker.AreaName}：使用自定义路线 {source.FallbackName} → {route.EventName}";
+            Status = $"正在前往自定义路线起点：{source.FallbackName}";
+        }
+        return started;
+    }
+
+    private bool StartCustomRoute(CustomNavigationRoute route, Vector3 eventTarget,
+        Vector3 navigationEndpoint, string name, bool replaceRecordedEndpoint)
+    {
+        if (tracker.PlayerPosition is not { } player || route.Points.Count < 2) return false;
+        var recorded = route.Points.Select(ToVector).ToList();
+        var closestStart = recorded
+            .Take(Math.Min(recorded.Count, 12))
+            .Select((point, index) => (point, index, distance: HorizontalDistanceSquared(player, point)))
+            .OrderBy(item => item.distance)
+            .First();
+        if (closestStart.distance > 25f * 25f)
+        {
+            Status = $"传送落点未进入自定义路线起点范围：{route.EventName}";
+            return false;
+        }
+
+        Cancel(null);
+        var path = new List<Vector3> { player };
+        path.AddRange(recorded.Skip(closestStart.index + (closestStart.distance < 1f ? 1 : 0)));
+        if (replaceRecordedEndpoint && path.Count >= 2)
+            path[^1] = navigationEndpoint;
+        path = ApplyAggroAvoidance(path);
+        if (path.Count < 2 || !vnavmesh.MoveAlong(path))
+        {
+            Status = $"无法启动自定义路线：{route.EventName}";
+            return false;
+        }
+        active = true;
+        activeCustomRouteJumps.Clear();
+        activeCustomRouteJumps.AddRange(route.Points
+            .Where(point => point.Action == CustomNavigationRoutePointAction.Jump)
+            .Select(ToVector));
+        activeCustomRoutePath.Clear();
+        activeCustomRoutePath.AddRange(path);
+        activeCustomRouteEventId = route.EventId;
+        activeCustomRouteJumpIndex = 0;
+        customRouteRestartAttempts = 0;
+        customRouteJumpRequestedAt = 0;
+        ownsMovingPath = true;
+        observedBusy = false;
+        destination = path[^1];
+        requestedDestination = path[^1];
+        eventNavigationTarget = eventTarget;
+        targetName = name;
+        displayPath = path;
+        startedAt = Environment.TickCount64;
+        cancelInputArmedAt = startedAt + 750;
+        DecisionStatus = $"{tracker.AreaName}：正在使用录制的完整路线前往 {route.EventName}";
+        Status = $"正在沿自定义路线前往：{route.EventName}";
+        return true;
+    }
+
+    private static Vector3 ToVector(CustomNavigationRoutePoint point) => new(point.X, point.Y, point.Z);
+
+    private void ClearActiveCustomRoute()
+    {
+        activeCustomRoutePath.Clear();
+        activeCustomRouteEventId = 0;
+        activeCustomRouteJumps.Clear();
+        activeCustomRouteJumpIndex = 0;
+        customRouteRestartAttempts = 0;
+        customRouteJumpRequestedAt = 0;
+    }
+
+    private bool RestartRemainingCustomRoute(Vector3 player, string reason)
+    {
+        if (activeCustomRoutePath.Count < 2 || customRouteRestartAttempts >= 3) return false;
+
+        var remaining = NavigationPathNormalizer.TrimPassedPrefix(player, activeCustomRoutePath);
+        if (remaining.Count == 0) return false;
+        while (activeCustomRouteJumpIndex < activeCustomRouteJumps.Count &&
+               !remaining.Any(point => Vector3.DistanceSquared(
+                   point, activeCustomRouteJumps[activeCustomRouteJumpIndex]) < 0.01f))
+        {
+            activeCustomRouteJumpIndex++;
+            customRouteJumpRequestedAt = 0;
+        }
+
+        if (Vector3.DistanceSquared(player, remaining[0]) > 0.25f)
+            remaining.Insert(0, player);
+        if (remaining.Count < 2) return false;
+
+        if (ownsMovingPath) vnavmesh.Stop();
+        if (!vnavmesh.MoveAlong(remaining)) return false;
+
+        customRouteRestartAttempts++;
+        activeCustomRoutePath.Clear();
+        activeCustomRoutePath.AddRange(remaining);
+        displayPath = remaining;
+        ownsMovingPath = true;
+        observedBusy = false;
+        navigationIdleSince = 0;
+        startedAt = Environment.TickCount64;
+        stuckSamplePosition = player;
+        stuckSampleAt = startedAt;
+        Status = $"{reason}，正从当前位置继续录制路线：{targetName}";
+        return true;
+    }
+
+    private static float RouteLength(IReadOnlyList<CustomNavigationRoutePoint> points)
+    {
+        var result = 0f;
+        for (var index = 1; index < points.Count; index++)
+            result += Vector3.Distance(ToVector(points[index - 1]), ToVector(points[index]));
+        return result;
+    }
+
     private bool RememberEventTarget(bool started, Vector3 target)
     {
         eventNavigationTarget = started ? target : null;
         return started;
     }
 
-    public bool NavigateToMapPosition(Vector2 mapPosition, string name)
+    public bool NavigateToMapPosition(Vector2 mapPosition, string name, uint eventId = 0,
+        CustomNavigationRouteKind? routeKind = null)
     {
         var map = dataManager.GetExcelSheet<GameMap>().GetRowOrDefault(tracker.MapId);
         if (map is not { } row || row.SizeFactor == 0)
@@ -219,14 +559,42 @@ public sealed unsafe class NavigationService : IDisposable
         var scale = row.SizeFactor / 100f;
         var texture = (mapPosition - Vector2.One) * scale / 40.96f * 2048f;
         var world = (texture - new Vector2(1024f)) / scale - new Vector2(row.OffsetX, row.OffsetY);
-        return NavigateToEvent(new Vector3(world.X, 0f, world.Y), name);
+        return NavigateToEvent(new Vector3(world.X, 0f, world.Y), name, eventId, routeKind);
     }
 
     public bool TravelToAetheryte(CrescentAetheryte target, string name)
         => BeginAetheryteTravel(target, name, null);
 
+    public bool TravelToNearestAetheryte(Vector3 destination, string destinationName)
+    {
+        var target = CrescentAetheryteCatalog.ForTerritory(tracker.TerritoryId)
+            .OrderBy(item => HorizontalDistanceSquared(item.Position, destination))
+            .FirstOrDefault();
+        if (target.DataId == 0)
+        {
+            Status = "当前区域没有可用的传送水晶";
+            return false;
+        }
+        var crystalName = CrescentAetheryteCatalog.Name(target, dataManager);
+        return BeginAetheryteTravel(target, $"{crystalName}（靠近 {destinationName}）", null);
+    }
+
+    public bool ReturnToCamp(CrescentAetheryte camp, string name)
+    {
+        if (tracker.PlayerPosition is not { } player)
+        {
+            Status = "无法读取玩家位置";
+            return false;
+        }
+        var crystals = CrescentAetheryteCatalog.ForTerritory(tracker.TerritoryId);
+        return IsInsideCrystalCamp(player, crystals)
+            ? BeginAetheryteTravel(camp, name, null)
+            : BeginAetheryteTravel(camp, name, null, completeAfterDemiReturn: true);
+    }
+
     private bool BeginAetheryteTravel(CrescentAetheryte target, string name, NavigationFollowUp? followUp,
-        bool allowDemiReturn = true, CrescentAetheryte? preferredSource = null)
+        bool allowDemiReturn = true, CrescentAetheryte? preferredSource = null,
+        bool completeAfterDemiReturn = false)
     {
         if (pendingAetheryte is { } pending && pending.DataId == target.DataId)
         {
@@ -247,7 +615,8 @@ public sealed unsafe class NavigationService : IDisposable
             return false;
         }
         pendingFollowUp = followUp;
-        if (!IsMountedOrMounting() && TryTeleport(target, name)) return true;
+        completeAtCampAfterDemiReturn = completeAfterDemiReturn;
+        if (!completeAfterDemiReturn && !IsMountedOrMounting() && TryTeleport(target, name)) return true;
         if (tracker.PlayerPosition is not { } player)
         {
             Status = "无法读取玩家位置";
@@ -258,7 +627,9 @@ public sealed unsafe class NavigationService : IDisposable
                 target.DataId is >= 5571 and <= 5576
                     ? Core.PotCandidateCatalog.NorthHornTerritoryId
                     : Core.PotCandidateCatalog.SouthHornTerritoryId);
-        var source = preferredSource is { } preferred && currentSources.Contains(preferred)
+        var source = completeAfterDemiReturn
+            ? target
+            : preferredSource is { } preferred && currentSources.Contains(preferred)
             ? preferred
             : currentSources.OrderBy(item => HorizontalDistanceSquared(item.Position, player)).FirstOrDefault();
         if (source.DataId == 0)
@@ -272,6 +643,7 @@ public sealed unsafe class NavigationService : IDisposable
         pendingAetheryteName = name;
         teleportDeadline = Environment.TickCount64 + 45_000;
         nextInteractionAt = 0;
+        nextCrystalNavigationAt = 0;
         cancelInputArmedAt = Environment.TickCount64 + 300;
         if (HorizontalDistanceSquared(player, source.Position) <= 5f * 5f)
         {
@@ -295,17 +667,22 @@ public sealed unsafe class NavigationService : IDisposable
         return true;
     }
 
-    public bool NavigateTo(Vector3 target, string name)
+    public bool NavigateTo(
+        Vector3 target,
+        string name,
+        bool allowMount = true,
+        bool allowLargeHeightCorrection = false)
     {
         if (active)
         {
-            if (Vector3.DistanceSquared(destination, target) < 1f)
+            if (Vector3.DistanceSquared(requestedDestination, target) < 1f)
             {
                 Cancel("已取消自动导航");
                 return false;
             }
             Cancel(null);
         }
+        ClearActiveCustomRoute();
         if (!tracker.IsSupportedTerritory)
         {
             Status = "自动导航仅在新月岛南部或北部可用";
@@ -323,18 +700,24 @@ public sealed unsafe class NavigationService : IDisposable
         }
         var longRoute = HorizontalDistanceSquared(player, target) >
                         MountMinimumPathDistance * MountMinimumPathDistance;
-        if (longRoute) TryRequestMount();
-        var reachableTarget = vnavmesh.QueryNearestReachable(target, 12f, 80f);
+        if (longRoute && allowMount) TryRequestMount();
+        // Pot candidates come from a two-dimensional map. Resolve them with the same downward
+        // floor probe used by their scene markers so navigation cannot silently choose a lower
+        // floor at the same X/Z coordinate.
+        var reachableTarget = allowLargeHeightCorrection
+            ? ResolveTreasureCandidateFloor(target, player)
+            : vnavmesh.QueryNearestReachable(target, 12f, 80f);
         if (reachableTarget is not { } resolvedTarget)
         {
             Status = $"目标附近没有可达导航网格：{name}";
             return false;
         }
         pathCancellation = new CancellationTokenSource();
-        pathOrigin = player;
+        pathRequestPlayerPosition = player;
+        pathOrigin = ResolvePathOrigin(player);
         pathNavigationPoint = resolvedTarget;
         pathOriginReplans = 0;
-        pathTask = vnavmesh.Pathfind(pathOrigin, pathNavigationPoint, pathCancellation.Token);
+        pathTask = ObservePathTask(vnavmesh.Pathfind(pathOrigin, pathNavigationPoint, pathCancellation.Token));
         if (pathTask == null)
         {
             pathCancellation.Dispose();
@@ -346,10 +729,12 @@ public sealed unsafe class NavigationService : IDisposable
             }
             ownsMovingPath = true;
         }
-        destination = target;
+        requestedDestination = target;
+        destination = resolvedTarget;
         targetName = name;
         startedAt = Environment.TickCount64;
         observedBusy = false;
+        navigationIdleSince = 0;
         active = true;
         cancelInputArmedAt = Environment.TickCount64 + 300;
         Status = pathTask == null
@@ -360,14 +745,32 @@ public sealed unsafe class NavigationService : IDisposable
         return true;
     }
 
+    private Vector3? ResolveTreasureCandidateFloor(Vector3 target, Vector3 player)
+    {
+        var probe = new Vector3(target.X, player.Y + 50f, target.Z);
+        return vnavmesh.QueryPointOnFloor(probe, 3f) ??
+               vnavmesh.QueryNearestReachable(probe, 3f, 30f);
+    }
+
+    private Vector3 ResolvePathOrigin(Vector3 player)
+    {
+        var probe = player + new Vector3(0f, 5f, 0f);
+        return vnavmesh.QueryNearestReachable(player, 2f, 3f) ??
+               vnavmesh.QueryPointOnFloor(probe, 4f) ??
+               vnavmesh.QueryNearestReachable(player, 4f, 20f) ??
+               player;
+    }
+
     public void Cancel(string? message = "已取消自动导航")
     {
         var hadTravel = IsNavigating || pathTask != null;
         pathCancellation?.Cancel();
+        ObservePathTask(pathTask);
         pathCancellation?.Dispose();
         pathCancellation = null;
         pathTask = null;
         pathOrigin = default;
+        pathRequestPlayerPosition = default;
         pathNavigationPoint = default;
         pathOriginReplans = 0;
         routePlan?.Cancellation.Cancel();
@@ -376,10 +779,17 @@ public sealed unsafe class NavigationService : IDisposable
         if (hadTravel) vnavmesh.Stop();
         if (hadTravel) commandManager.ProcessCommand("/automove off");
         active = false;
+        activeCustomRouteJumps.Clear();
+        activeCustomRoutePath.Clear();
+        activeCustomRouteEventId = 0;
+        activeCustomRouteJumpIndex = 0;
+        customRouteRestartAttempts = 0;
+        customRouteJumpRequestedAt = 0;
         eventNavigationTarget = null;
         displayPath = [];
         ownsMovingPath = false;
         observedBusy = false;
+        navigationIdleSince = 0;
         ClearPendingTeleport();
         pendingFollowUp = null;
         arrivalFollowUp = null;
@@ -396,6 +806,7 @@ public sealed unsafe class NavigationService : IDisposable
 
     private void OnFrameworkUpdate(IFramework _)
     {
+        UpdateCustomRouteRecording();
         CompleteObservedActionTimings();
         var territory = tracker.TerritoryId;
         if (recoveryTerritory != territory)
@@ -419,7 +830,13 @@ public sealed unsafe class NavigationService : IDisposable
             Cancel("已离开新月岛，自动导航已取消");
             return;
         }
-        if (tracker.PlayerPosition is { } player && HorizontalDistanceSquared(player, destination) <= 3f * 3f)
+        if (tracker.PlayerPosition is { } jumpPlayer)
+            UpdateCustomRouteJump(jumpPlayer, Environment.TickCount64);
+        var navigationArrivalRadius = pendingAetheryte != null
+            ? CrystalNavigationArrivalRadius
+            : 3f;
+        if (tracker.PlayerPosition is { } player &&
+            HorizontalDistanceSquared(player, destination) <= navigationArrivalRadius * navigationArrivalRadius)
         {
             if (recoveryDetourActive)
             {
@@ -444,21 +861,23 @@ public sealed unsafe class NavigationService : IDisposable
         {
             if (completedPath.IsCompletedSuccessfully && completedPath.Result.Count > 0 &&
                 tracker.PlayerPosition is { } currentPlayer &&
-                HorizontalDistanceSquared(currentPlayer, pathOrigin) >
+                HorizontalDistanceSquared(currentPlayer, pathRequestPlayerPosition) >
                 PathOriginReplanDistance * PathOriginReplanDistance &&
                 pathOriginReplans < MaxPathOriginReplans)
             {
                 var replacementCancellation = new CancellationTokenSource();
-                var replacementTask = vnavmesh.Pathfind(
-                    currentPlayer,
+                var replacementOrigin = ResolvePathOrigin(currentPlayer);
+                var replacementTask = ObservePathTask(vnavmesh.Pathfind(
+                    replacementOrigin,
                     pathNavigationPoint,
-                    replacementCancellation.Token);
+                    replacementCancellation.Token));
                 if (replacementTask != null)
                 {
                     pathCancellation?.Dispose();
                     pathCancellation = replacementCancellation;
                     pathTask = replacementTask;
-                    pathOrigin = currentPlayer;
+                    pathRequestPlayerPosition = currentPlayer;
+                    pathOrigin = replacementOrigin;
                     pathOriginReplans++;
                     startedAt = Environment.TickCount64;
                     Status = $"位置已变化，正在从当前位置重新规划：{targetName}";
@@ -471,6 +890,14 @@ public sealed unsafe class NavigationService : IDisposable
             pathCancellation = null;
             if (!completedPath.IsCompletedSuccessfully || completedPath.Result.Count == 0)
             {
+                if (vnavmesh.NavigateTo(destination))
+                {
+                    ownsMovingPath = true;
+                    observedBusy = false;
+                    startedAt = Environment.TickCount64;
+                    Status = $"详细路径不可用，已切换普通导航：{targetName}";
+                    return;
+                }
                 active = false;
                 Status = $"没有找到前往目标的路线：{targetName}";
                 return;
@@ -501,13 +928,29 @@ public sealed unsafe class NavigationService : IDisposable
                 TryRequestMount();
                 Status = $"正在上坐骑并规划路线：{targetName}";
             }
-            if (Environment.TickCount64 - startedAt <= 15_000) return;
-            Cancel(null);
-            Status = $"路径规划超时：{targetName}";
+            if (Environment.TickCount64 - startedAt <= PathPlanningFallbackMilliseconds) return;
+            pathCancellation?.Cancel();
+            ObservePathTask(pathTask);
+            pathCancellation?.Dispose();
+            pathCancellation = null;
+            pathTask = null;
+            vnavmesh.CancelPathfinds();
+            if (vnavmesh.NavigateTo(destination))
+            {
+                ownsMovingPath = true;
+                observedBusy = false;
+                startedAt = Environment.TickCount64;
+                Status = $"详细路径规划超时，已切换普通导航：{targetName}";
+                return;
+            }
+            active = false;
+            ownsMovingPath = false;
+            Status = $"路径规划超时且普通导航启动失败：{targetName}";
             return;
         }
         var busy = vnavmesh.IsBusy();
         if (busy && tracker.PlayerPosition is { } movingPlayer &&
+            !IsNearPendingAetheryte(movingPlayer) &&
             UpdateStuckRecovery(movingPlayer, Environment.TickCount64))
             return;
         if (busy) TryMountForLongNavigation();
@@ -528,24 +971,124 @@ public sealed unsafe class NavigationService : IDisposable
                 displayPath = safePath;
             }
         }
+        if (busy) navigationIdleSince = 0;
         observedBusy |= busy;
         if (observedBusy && !busy)
         {
+            var now = Environment.TickCount64;
+            if (navigationIdleSince == 0)
+            {
+                navigationIdleSince = now;
+                return;
+            }
+            if (now - navigationIdleSince < NavigationIdleConfirmationMilliseconds) return;
             if (recoveryDetourActive && tracker.PlayerPosition is { } stoppedPlayer)
             {
                 FailRecoveryDetour(stoppedPlayer);
                 return;
             }
+            if (tracker.PlayerPosition is { } customRoutePlayer &&
+                RestartRemainingCustomRoute(customRoutePlayer, "vnavmesh 短暂停止"))
+                return;
             active = false;
             ownsMovingPath = false;
+            navigationIdleSince = 0;
             Status = $"导航已结束：{targetName}";
         }
         else if (!observedBusy && Environment.TickCount64 - startedAt > 10_000)
         {
+            if (tracker.PlayerPosition is { } customRoutePlayer &&
+                RestartRemainingCustomRoute(customRoutePlayer, "vnavmesh 未开始移动"))
+                return;
             active = false;
             ownsMovingPath = false;
             Status = $"vnavmesh 未开始移动：{targetName}";
         }
+    }
+
+    private void UpdateCustomRouteRecording()
+    {
+        if (!IsRecordingCustomRoute) return;
+        if (tracker.TerritoryId != recordedRouteTerritory)
+        {
+            ClearRouteRecording();
+            RouteRecordingStatus = "区域发生变化，路线录制已取消";
+            return;
+        }
+        if (tracker.PlayerPosition is not { } player) return;
+        var now = Environment.TickCount64;
+        if (now < nextRouteRecordSample) return;
+        nextRouteRecordSample = now + 100;
+        var jumping = condition[ConditionFlag.Jumping];
+        if (jumping && !recordingWasJumping && recordedRouteSamples.Count > 0)
+            recordedRouteSamples[^1] = recordedRouteSamples[^1] with { Jump = true };
+        if (AddRecordedRoutePoint(player, jumping ? 0.75f : 1.5f, jumping))
+            displayPath = recordedRouteSamples.Select(item => item.Position).ToArray();
+        recordingWasJumping = jumping;
+        if (recordedRouteDestination is not { } destination)
+        {
+            RouteRecordingStatus = $"正在录制 {recordedRouteEventName} · 已记录 {recordedRouteSamples.Count} 点 · 终点未知";
+            return;
+        }
+
+        var distance = HorizontalDistance(player, destination);
+        var jumpCount = recordedRouteSamples.Count(item => item.Jump);
+        RouteRecordingStatus = $"正在录制 {recordedRouteEventName} · 已记录 {recordedRouteSamples.Count} 点、{jumpCount} 次跳跃 · 距终点 {distance:F0}m";
+        if (distance > RouteRecordingArrivalRadius)
+        {
+            recordedRouteArrivalSince = 0;
+            return;
+        }
+        if (recordedRouteArrivalSince == 0)
+        {
+            recordedRouteArrivalSince = now;
+            RouteRecordingStatus = $"已到达 {recordedRouteEventName} 终点，正在确认…";
+            return;
+        }
+        if (now - recordedRouteArrivalSince < RouteRecordingArrivalConfirmationMilliseconds) return;
+        FinishCustomRouteRecording();
+    }
+
+    private bool AddRecordedRoutePoint(Vector3 point, float minimumDistance, bool airborne)
+    {
+        if (recordedRouteSamples.Count > 0 &&
+            Vector3.DistanceSquared(recordedRouteSamples[^1].Position, point) < minimumDistance * minimumDistance)
+            return false;
+        recordedRouteSamples.Add(new RecordedRouteSample(point, false, airborne));
+        return true;
+    }
+
+    private List<CustomNavigationRoutePoint> BuildRecordedRoutePoints()
+    {
+        var result = new List<CustomNavigationRoutePoint>(recordedRouteSamples.Count);
+        foreach (var sample in recordedRouteSamples)
+        {
+            // vnavmesh cannot replay airborne XYZ samples. The takeoff point carries the action and
+            // the first grounded sample after it becomes the landing target.
+            if (sample.Airborne) continue;
+            result.Add(new CustomNavigationRoutePoint
+            {
+                X = sample.Position.X,
+                Y = sample.Position.Y,
+                Z = sample.Position.Z,
+                Action = sample.Jump ? CustomNavigationRoutePointAction.Jump : CustomNavigationRoutePointAction.None
+            });
+        }
+        return result;
+    }
+
+    private void ClearRouteRecording()
+    {
+        recordedRouteSamples.Clear();
+        recordedRouteTerritory = 0;
+        recordedRouteSourceAetheryte = 0;
+        recordedRouteEventId = 0;
+        recordedRouteEventName = string.Empty;
+        recordedRouteDestination = null;
+        recordedRouteArrivalSince = 0;
+        nextRouteRecordSample = 0;
+        recordingWasJumping = false;
+        displayPath = [];
     }
 
     private void TryMountForLongNavigation()
@@ -554,6 +1097,32 @@ public sealed unsafe class NavigationService : IDisposable
         if (tracker.PlayerPosition is not { } player || PathDistance(player, waypoints) <= MountMinimumPathDistance)
             return;
         TryRequestMount();
+    }
+
+    private void UpdateCustomRouteJump(Vector3 player, long now)
+    {
+        if (activeCustomRouteJumpIndex >= activeCustomRouteJumps.Count) return;
+        var jumpPoint = activeCustomRouteJumps[activeCustomRouteJumpIndex];
+
+        if (customRouteJumpRequestedAt != 0 && condition[ConditionFlag.Jumping])
+        {
+            activeCustomRouteJumpIndex++;
+            customRouteJumpRequestedAt = 0;
+            Status = $"已执行路线跳跃 {activeCustomRouteJumpIndex}/{activeCustomRouteJumps.Count}：{targetName}";
+            return;
+        }
+
+        if (HorizontalDistanceSquared(player, jumpPoint) >
+            CustomRouteJumpTriggerRadius * CustomRouteJumpTriggerRadius)
+            return;
+        if (customRouteJumpRequestedAt != 0 && now - customRouteJumpRequestedAt < CustomRouteJumpRetryMilliseconds)
+            return;
+
+        var actionManager = ActionManager.Instance();
+        if (actionManager == null || actionManager->GetActionStatus(ActionType.GeneralAction, 2) != 0) return;
+        actionManager->UseAction(ActionType.GeneralAction, 2);
+        customRouteJumpRequestedAt = now;
+        Status = $"正在执行路线跳跃 {activeCustomRouteJumpIndex + 1}/{activeCustomRouteJumps.Count}：{targetName}";
     }
 
     private bool UpdateStuckRecovery(Vector3 player, long now)
@@ -576,6 +1145,12 @@ public sealed unsafe class NavigationService : IDisposable
                 ResetStuckMonitor(player, now);
                 Status = $"跳跃脱困成功，继续前往：{targetName}";
                 return false;
+            }
+
+            if (RestartRemainingCustomRoute(player, "跳跃脱困后续跑"))
+            {
+                stuckRecoveryStage = StuckRecoveryStage.Replanned;
+                return true;
             }
 
             var replanTarget = destination;
@@ -605,6 +1180,7 @@ public sealed unsafe class NavigationService : IDisposable
         stuckSampleAt = now;
         if (moved >= StuckMovementDistance * StuckMovementDistance)
         {
+            customRouteRestartAttempts = 0;
             if (stuckRecoveryStage == StuckRecoveryStage.Replanned &&
                 HorizontalDistanceSquared(player, stuckOrigin) >=
                 StuckRecoveryClearDistance * StuckRecoveryClearDistance)
@@ -706,7 +1282,8 @@ public sealed unsafe class NavigationService : IDisposable
         stuckRecoveryStage = StuckRecoveryStage.Monitoring;
         stuckSamplePosition = player;
         stuckSampleAt = Environment.TickCount64;
-        NavigateToPreservingTeleport(finalDestination, finalName);
+        if (!RestartRemainingCustomRoute(player, "绕开障碍后续跑"))
+            NavigateToPreservingTeleport(finalDestination, finalName);
         Status = $"已绕开障碍，继续前往：{finalName}";
     }
 
@@ -796,7 +1373,7 @@ public sealed unsafe class NavigationService : IDisposable
     private List<Vector3> ApplyAggroAvoidance(IReadOnlyList<Vector3> path)
     {
         if (!configuration.AvoidMonsterAggroRanges || path.Count < 2 ||
-            tracker.AreaName != "新月岛北部" || objectTable.LocalPlayer is not { } player)
+            objectTable.LocalPlayer is not { } player)
             return path.ToList();
         var zones = new List<NorthHornAggroZone>();
         var playerBattleChara = (BattleChara*)(void*)player.Address;
@@ -811,7 +1388,7 @@ public sealed unsafe class NavigationService : IDisposable
                 battleChara->IsDead() || battleChara->Health == 0 || !battleChara->GetIsTargetable() ||
                 HorizontalDistanceSquared(player.Position, battleChara->Position) >
                 configuration.AggroScanRange * configuration.AggroScanRange ||
-                !OccultCrescentMonsterCatalog.TryGet(Core.PotCandidateCatalog.NorthHornTerritoryId,
+                !OccultCrescentMonsterCatalog.TryGet(tracker.TerritoryId,
                     battleChara->NameId, out var profile))
                 continue;
             var mobLevel = battleChara->ForayInfo.Level;
@@ -866,18 +1443,22 @@ public sealed unsafe class NavigationService : IDisposable
             if (now - pending.StartedAt <= 15_000) return true;
             pending.Cancellation.Cancel();
             pending.Cancellation.Dispose();
+            vnavmesh.CancelPathfinds();
             routePlan = null;
             return FallBackFromRouteComparison(
-                pending.FollowUp.Position, pending.FollowUp.Name, pending.DirectOrigin, "路线比较超时");
+                pending.FollowUp.Position, pending.FollowUp.NavigationPoint,
+                pending.FollowUp.Name, pending.DirectOrigin, "路线比较超时");
         }
 
         RouteComparisonPaths? comparison = pending.Task.IsCompletedSuccessfully ? pending.Task.Result : null;
         pending.Cancellation.Cancel();
         pending.Cancellation.Dispose();
+        vnavmesh.CancelPathfinds();
         routePlan = null;
         if (comparison == null)
             return FallBackFromRouteComparison(
-                pending.FollowUp.Position, pending.FollowUp.Name, pending.DirectOrigin, "没有可用的路线比较结果");
+                pending.FollowUp.Position, pending.FollowUp.NavigationPoint,
+                pending.FollowUp.Name, pending.DirectOrigin, "没有可用的路线比较结果");
 
         var directDistance = comparison.DirectPath is { Count: > 0 } directPath
             ? CalculateSafePathDistance(pending.DirectOrigin, pending.DestinationPoint, directPath)
@@ -926,7 +1507,8 @@ public sealed unsafe class NavigationService : IDisposable
                 return NavigateTo(pending.FollowUp.NavigationPoint, pending.FollowUp.Name);
             }
             return FallBackFromRouteComparison(
-                pending.FollowUp.Position, pending.FollowUp.Name, pending.DirectOrigin, "实际路线均不可用");
+                pending.FollowUp.Position, pending.FollowUp.NavigationPoint,
+                pending.FollowUp.Name, pending.DirectOrigin, "实际路线均不可用");
         }
 
         var transferKind = transfer.AccessMode switch
@@ -965,6 +1547,13 @@ public sealed unsafe class NavigationService : IDisposable
         ObserveTiming(RouteTimingKind.CrystalTransfer, (now - arrivalArmedAt) / 1000f, 1f, 60f);
         arrivalFollowUp = null;
         arrivalAetheryte = null;
+        if (followUp.CustomRoute is { } customRoute)
+        {
+            if (StartCustomRoute(customRoute, followUp.Position, followUp.NavigationPoint,
+                    followUp.Name, followUp.ReplaceCustomRouteEndpoint))
+                return true;
+            DecisionStatus = $"自定义路线起点不可用，已回退普通导航：{followUp.Name}";
+        }
         return NavigateTo(followUp.NavigationPoint, followUp.Name);
     }
 
@@ -1037,29 +1626,30 @@ public sealed unsafe class NavigationService : IDisposable
         return distance + Vector3.Distance(path[^1], target);
     }
 
-    private bool FallBackFromRouteComparison(Vector3 target, string name, Vector3 player, string reason)
+    private bool FallBackFromRouteComparison(Vector3 eventTarget, Vector3 navigationTarget,
+        string name, Vector3 player, string reason)
     {
         if (configuration.DirectNavigationDistance > 0f &&
-            HorizontalDistanceSquared(player, target) <=
+            HorizontalDistanceSquared(player, navigationTarget) <=
             configuration.DirectNavigationDistance * configuration.DirectNavigationDistance)
         {
             DecisionStatus = $"{tracker.AreaName}：{reason}，目标在回退阈值 {configuration.DirectNavigationDistance:F0}m 内，选择直达";
-            return NavigateTo(target, name);
+            return RememberEventTarget(NavigateTo(navigationTarget, name), eventTarget);
         }
 
         var fallback = CrescentAetheryteCatalog.ForTerritory(
                 tracker.AreaName == "新月岛北部"
                     ? Core.PotCandidateCatalog.NorthHornTerritoryId
                     : Core.PotCandidateCatalog.SouthHornTerritoryId)
-            .MinBy(item => HorizontalDistanceSquared(item.Position, target));
+            .MinBy(item => HorizontalDistanceSquared(item.Position, navigationTarget));
         if (fallback.DataId == 0)
         {
             DecisionStatus = $"{tracker.AreaName}：{reason}，没有可用水晶，选择直达";
-            return NavigateTo(target, name);
+            return RememberEventTarget(NavigateTo(navigationTarget, name), eventTarget);
         }
         DecisionStatus = $"{tracker.AreaName}：{reason}，回退到目标最近水晶 {fallback.FallbackName}";
         return BeginAetheryteTravel(fallback, fallback.FallbackName,
-            new NavigationFollowUp(target, target, name));
+            new NavigationFollowUp(eventTarget, navigationTarget, name));
     }
 
     private static string FormatSeconds(float seconds) =>
@@ -1082,7 +1672,16 @@ public sealed unsafe class NavigationService : IDisposable
             return true;
         }
         if (demiReturnPending && UpdateDemiReturn(playerPosition: tracker.PlayerPosition)) return true;
-        if (!IsMountedOrMounting() && TryTeleport(pending, pendingAetheryteName)) return true;
+        if (tracker.PlayerPosition is { } currentPlayer && completeAtCampAfterDemiReturn &&
+            HorizontalDistanceSquared(currentPlayer, pending.Position) <= 8f * 8f)
+        {
+            var completedName = pendingAetheryteName;
+            ClearPendingTeleport();
+            Status = $"已返回：{completedName}";
+            return true;
+        }
+        if (!completeAtCampAfterDemiReturn && !IsMountedOrMounting() && TryTeleport(pending, pendingAetheryteName))
+            return true;
         if (Environment.TickCount64 > teleportDeadline)
         {
             Cancel("水晶交互或传送超时");
@@ -1093,18 +1692,24 @@ public sealed unsafe class NavigationService : IDisposable
         var crystal = FindClosestAetheryteObject(player);
         if (crystal is not { } actualCrystal)
         {
-            if (HorizontalDistanceSquared(player, source.Position) > 3f * 3f) return false;
+            if (HorizontalDistanceSquared(player, source.Position) > 3f * 3f)
+                return active ? false : StartNavigationToSource(player);
             if (ownsMovingPath) vnavmesh.Stop();
             active = false;
             ownsMovingPath = false;
             Status = $"已到达水晶位置，正在等待加载可交互水晶：{pendingAetheryteName}";
             return true;
         }
-        if (HorizontalDistanceSquared(player, actualCrystal.Position) > 4f * 4f)
+        if (!IsWithinAetheryteInteractionRange(player, actualCrystal))
         {
-            if (!active || Vector3.DistanceSquared(destination, actualCrystal.Position) > 1f)
-                return NavigateToPreservingTeleport(actualCrystal.Position,
+            if (!active || Vector3.DistanceSquared(requestedDestination, actualCrystal.Position) > 1f)
+            {
+                if (Environment.TickCount64 < nextCrystalNavigationAt) return true;
+                nextCrystalNavigationAt = Environment.TickCount64 + CrystalNavigationRetryMilliseconds;
+                _ = NavigateToPreservingTeleport(actualCrystal.Position,
                     $"可交互水晶（随后传送至{pendingAetheryteName}）");
+                return true;
+            }
             return false;
         }
         if (ownsMovingPath) vnavmesh.Stop();
@@ -1175,7 +1780,15 @@ public sealed unsafe class NavigationService : IDisposable
         var movedFromOrigin = HorizontalDistanceSquared(player, demiReturnOrigin) >= 3f * 3f;
         var castCompleted = demiReturnSawCasting && elapsed >= 3_500;
         var fallbackElapsed = elapsed >= 4_000;
-        if (demiReturnSawTransition || movedFromOrigin || castCompleted || fallbackElapsed)
+        var arrivedAtCamp = demiReturnSawTransition || movedFromOrigin;
+        if (completeAtCampAfterDemiReturn && arrivedAtCamp)
+        {
+            var completedName = pendingAetheryteName;
+            ClearPendingTeleport();
+            Status = $"亚返回完成，已返回：{completedName}";
+            return true;
+        }
+        if (arrivedAtCamp || castCompleted || fallbackElapsed)
         {
             demiReturnPending = false;
             teleportDeadline = now + 45_000;
@@ -1196,13 +1809,17 @@ public sealed unsafe class NavigationService : IDisposable
     private bool StartNavigationToSource(Vector3 player)
     {
         if (sourceAetheryte is not { } source) return true;
+        if (Environment.TickCount64 < nextCrystalNavigationAt) return true;
+        nextCrystalNavigationAt = Environment.TickCount64 + CrystalNavigationRetryMilliseconds;
         var crystal = FindClosestAetheryteObject(player);
         var target = crystal?.Position ?? source.Position;
-        if (crystal is { } actualCrystal &&
-            HorizontalDistanceSquared(player, actualCrystal.Position) <= 4f * 4f)
+        if (crystal is { } actualCrystal && IsWithinAetheryteInteractionRange(player, actualCrystal))
             return false;
-        if (NavigateTo(target, $"附近水晶（随后传送至{pendingAetheryteName}）")) return true;
-        ClearPendingTeleport();
+        var name = $"附近水晶（随后传送至{pendingAetheryteName}）";
+        if (crystal != null)
+            _ = NavigateToPreservingTeleport(target, name);
+        else
+            _ = NavigateTo(target, name);
         return true;
     }
 
@@ -1234,7 +1851,7 @@ public sealed unsafe class NavigationService : IDisposable
         return true;
     }
 
-    private (nint Address, Vector3 Position)? FindClosestAetheryteObject(Vector3 player)
+    private AetheryteObject? FindClosestAetheryteObject(Vector3 player)
     {
         var southName = dataManager.GetExcelSheet<Lumina.Excel.Sheets.EObjName>()
             .GetRowOrDefault(2006473)?.Singular.ToString();
@@ -1248,7 +1865,23 @@ public sealed unsafe class NavigationService : IDisposable
                             item.Name.ToString().Equals(northName, StringComparison.OrdinalIgnoreCase)))
             .OrderBy(item => HorizontalDistanceSquared(item.Position, player))
             .FirstOrDefault();
-        return gameObject == null ? null : (gameObject.Address, gameObject.Position);
+        return gameObject == null
+            ? null
+            : new AetheryteObject(gameObject.Address, gameObject.Position, MathF.Max(0f, gameObject.HitboxRadius));
+    }
+
+    private static bool IsWithinAetheryteInteractionRange(Vector3 player, AetheryteObject crystal)
+    {
+        var range = MathF.Max(4f, crystal.HitboxRadius + CrystalInteractionPadding);
+        return HorizontalDistanceSquared(player, crystal.Position) <= range * range;
+    }
+
+    private bool IsNearPendingAetheryte(Vector3 player)
+    {
+        if (pendingAetheryte == null) return false;
+        var target = FindClosestAetheryteObject(player)?.Position ?? sourceAetheryte?.Position;
+        return target is { } position && HorizontalDistanceSquared(player, position) <=
+            CrystalStuckRecoverySuppressionRadius * CrystalStuckRecoverySuppressionRadius;
     }
 
     private bool NavigateToPreservingTeleport(Vector3 target, string name)
@@ -1261,8 +1894,30 @@ public sealed unsafe class NavigationService : IDisposable
         active = false;
         ownsMovingPath = false;
         observedBusy = false;
+        navigationIdleSince = 0;
         displayPath = [];
-        return NavigateTo(target, name);
+        var resolved = vnavmesh.QueryNearestReachable(target, 12f, 80f) ?? target;
+        if (!vnavmesh.NavigateTo(resolved)) return NavigateTo(target, name);
+        requestedDestination = target;
+        destination = resolved;
+        targetName = name;
+        startedAt = Environment.TickCount64;
+        cancelInputArmedAt = startedAt + 300;
+        active = true;
+        ownsMovingPath = true;
+        Status = $"正在直接前往：{name}";
+        return true;
+    }
+
+    private static Task<List<Vector3>>? ObservePathTask(Task<List<Vector3>>? task)
+    {
+        if (task == null) return null;
+        _ = task.ContinueWith(
+            completed => _ = completed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+        return task;
     }
 
     private static bool TryInteractWithAetheryte(nint address)
@@ -1282,11 +1937,13 @@ public sealed unsafe class NavigationService : IDisposable
         sourceAetheryte = null;
         pendingAetheryteName = string.Empty;
         nextInteractionAt = 0;
+        nextCrystalNavigationAt = 0;
         teleportDeadline = 0;
         demiReturnPending = false;
         demiReturnAccepted = false;
         demiReturnSawCasting = false;
         demiReturnSawTransition = false;
+        completeAtCampAfterDemiReturn = false;
         demiReturnOrigin = Vector3.Zero;
         demiReturnStartedAt = 0;
         nextDemiReturnAt = 0;
@@ -1310,6 +1967,8 @@ public sealed unsafe class NavigationService : IDisposable
         if (requested && dismountRequestedAt == 0) dismountRequestedAt = now;
         return requested;
     }
+
+    public bool RequestDismount() => TryDismount();
 
     private bool TryRequestMount()
     {
@@ -1396,7 +2055,15 @@ public sealed unsafe class NavigationService : IDisposable
         return x * x + z * z;
     }
 
-    private sealed record NavigationFollowUp(Vector3 Position, Vector3 NavigationPoint, string Name);
+    private static float HorizontalDistance(Vector3 left, Vector3 right) =>
+        MathF.Sqrt(HorizontalDistanceSquared(left, right));
+
+    private sealed record NavigationFollowUp(Vector3 Position, Vector3 NavigationPoint, string Name,
+        CustomNavigationRoute? CustomRoute = null, bool ReplaceCustomRouteEndpoint = false);
+
+    private readonly record struct RecordedRouteSample(Vector3 Position, bool Jump, bool Airborne);
+
+    private readonly record struct AetheryteObject(nint Address, Vector3 Position, float HitboxRadius);
 
     private sealed record PendingRoutePlan(
         NavigationFollowUp FollowUp,

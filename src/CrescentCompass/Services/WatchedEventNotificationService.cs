@@ -207,7 +207,8 @@ public sealed class WatchedEventNotificationService : IDisposable
         ImGui.SetCursorPosY(contentTop + MathF.Max(0f, (contentBottom - contentTop - buttonHeight) / 2f));
         if (ImGui.SmallButton("前往##banner-navigate"))
         {
-            navigationService.NavigateToEvent(item.Position, $"{kind}：{name}");
+            navigationService.NavigateToEvent(item.Position, $"{kind}：{name}", item.DataId,
+                CustomRouteKind(item.Kind));
             prominentBanner = null;
         }
         ImGui.EndTable();
@@ -215,12 +216,10 @@ public sealed class WatchedEventNotificationService : IDisposable
 
     private void DrawBannerEventContent(OccultEventSnapshot item, string kind, string name)
     {
-        var lineStart = ImGui.GetCursorPosX();
         ImGui.TextColored(item.Kind == OccultEventKind.CriticalEngagement
             ? new Vector4(1f, 0.78f, 0.22f, 1f)
             : new Vector4(0.20f, 0.82f, 0.96f, 1f), kind);
-        ImGui.SameLine(0f, 0f);
-        ImGui.SetCursorPosX(lineStart + 42f * ImGuiHelpers.GlobalScale);
+        ImGui.SameLine(0f, 8f * ImGuiHelpers.GlobalScale);
         ImGui.TextUnformatted(name);
         DrawRewardTags(item);
 
@@ -467,10 +466,19 @@ public sealed class WatchedEventNotificationService : IDisposable
         });
         active.Click += args =>
         {
-            navigationService.NavigateToEvent(target.Position, $"{KindName(target)}：{target.Name}");
+            navigationService.NavigateToEvent(target.Position, $"{KindName(target)}：{target.Name}", target.DataId,
+                CustomRouteKind(target.Kind));
             args.Notification.DismissNow();
         };
     }
+
+    private static CustomNavigationRouteKind? CustomRouteKind(OccultEventKind kind) => kind switch
+    {
+        OccultEventKind.CriticalEngagement => CustomNavigationRouteKind.CriticalEngagement,
+        OccultEventKind.Fate or OccultEventKind.MagicPot or OccultEventKind.MagicPotForecast =>
+            CustomNavigationRouteKind.Fate,
+        _ => null
+    };
 
     private unsafe void PlayInGameNotificationSound()
     {

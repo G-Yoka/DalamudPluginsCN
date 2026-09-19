@@ -129,9 +129,11 @@ public sealed class FateWatchWindow : Window
             if (ImGui.SmallButton($"前往##navigate-fate-{entry.Id}"))
             {
                 if (active.DataId != 0)
-                    navigationService.NavigateToEvent(active.Position, $"FATE：{name}");
+                    navigationService.NavigateToEvent(active.Position, $"FATE：{name}", active.DataId,
+                        CustomNavigationRouteKind.Fate);
                 else
-                    navigationService.NavigateToMapPosition(entry.MapPosition, $"FATE：{name}");
+                    navigationService.NavigateToMapPosition(entry.MapPosition, $"FATE：{name}", entry.Id,
+                        CustomNavigationRouteKind.Fate);
             }
             if (!canNavigate) ImGui.EndDisabled();
         }

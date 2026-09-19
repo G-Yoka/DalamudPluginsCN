@@ -2,16 +2,16 @@
   "Author": "G-Yoka",
   "Name": "新月罗盘",
   "InternalName": "CrescentCompass",
-  "AssemblyVersion": "0.1.4.0",
+  "AssemblyVersion": "0.2.0.0",
   "Punchline": "新月岛寻宝、事件关注与地图导航助手。",
-  "Description": "独立的新月岛助手。提供铜银宝箱、魔法罐寻宝、FATE/CE 关注提醒、怪物警戒与地图导航。",
+  "Description": "独立的新月岛助手。提供宝箱与魔法罐寻宝、FATE/CE 关注提醒、自动事件与战斗接管（测试）、内置与用户路线、怪物警戒及地图导航。",
   "ApplicableVersion": "any",
   "DalamudApiLevel": 15,
   "RepoUrl": "https://github.com/G-Yoka/DalamudPluginsCN",
   "IconUrl": "https://raw.githubusercontent.com/G-Yoka/DalamudPluginsCN/main/plugins/CrescentCompass/images/icon.png",
-  "DownloadLinkInstall": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/CrescentCompass-v0.1.4/CrescentCompass.zip",
-  "DownloadLinkUpdate": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/CrescentCompass-v0.1.4/CrescentCompass.zip",
-  "DownloadLinkTesting": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/CrescentCompass-v0.1.4/CrescentCompass.zip",
+  "DownloadLinkInstall": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/CrescentCompass-v0.2.0/CrescentCompass.zip",
+  "DownloadLinkUpdate": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/CrescentCompass-v0.2.0/CrescentCompass.zip",
+  "DownloadLinkTesting": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/CrescentCompass-v0.2.0/CrescentCompass.zip",
   "IsHide": false,
   "IsTestingExclusive": false,
   "AcceptsFeedback": true,
@@ -22,5 +22,6 @@
     "CE",
     "导航"
   ],
-  "LastUpdate": 1789316138
+  "LastUpdate": 1789827971,
+  "Changelog": "新增：自动事件与战斗接管（测试）、39 条内置基础路线、用户路线覆盖、路线跳跃回放、随机停止点与完整配置 JSON 导入导出。内置路线用于缺省回退，更推荐用户按自己的移动环境录制路线。\n改进：比较直达／亚返回／水晶传送耗时；事件内选择目标并进入攻击距离后再启动战斗托管；BossmodRebornCN 接管移动后停止 vnavmesh 追击。\n修复：CE 场外目标、友军罐子目标、事件结束后前往中心、魔法罐宝箱交互与校准、录制路线调用、北岛水晶传送及多项导航卡顿问题。"
 }

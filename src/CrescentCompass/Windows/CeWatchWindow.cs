@@ -148,7 +148,8 @@ public sealed class CeWatchWindow : Window
             if (ImGui.SmallButton($"前往##navigate-{entry.Id}"))
             {
                 if (active.DataId != 0)
-                    navigationService.NavigateToEvent(active.Position, $"CE：{labels.Event}");
+                    navigationService.NavigateToEvent(active.Position, $"CE：{labels.Event}", active.DataId,
+                        CustomNavigationRouteKind.CriticalEngagement);
                 else
                     navigationService.NavigateToMapPosition(entry.SearchPosition, $"触发怪：{labels.Mob}");
             }

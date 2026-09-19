@@ -22,10 +22,13 @@ public sealed class Plugin : IDalamudPlugin
     private readonly TreasureTracker treasureTracker;
     private readonly OccultEventTracker occultEventTracker;
     private readonly NavigationService navigationService;
+    private readonly CombatAutomationIntegrations combatAutomationIntegrations;
+    private readonly EventAutomationService eventAutomationService;
     private readonly TreasureSurveyService treasureSurveyService;
     private readonly WatchedEventNotificationService watchedEventNotificationService;
     private readonly CeWatchWindow ceWatchWindow;
     private readonly FateWatchWindow fateWatchWindow;
+    private readonly AutomationWatchWindow automationWatchWindow;
     private readonly TreasureMapWindow treasureMapWindow;
     private readonly MapDetailsWindow mapDetailsWindow;
     private readonly SceneOverlayRenderer sceneOverlayRenderer;
@@ -41,6 +44,7 @@ public sealed class Plugin : IDalamudPlugin
         IAddonLifecycle addonLifecycle,
         IGameGui gameGui,
         ICondition condition,
+        ITargetManager targetManager,
         IPartyList partyList,
         IPlayerState playerState,
         IFateTable fateTable,
@@ -67,6 +71,12 @@ public sealed class Plugin : IDalamudPlugin
         navigationService = new NavigationService(
             Configuration, treasureTracker, vnavmesh, keyState, framework,
             objectTable, condition, commandManager, dataManager, SaveConfiguration);
+        combatAutomationIntegrations = new CombatAutomationIntegrations(
+            pluginInterface, commandManager, log);
+        eventAutomationService = new EventAutomationService(
+            Configuration, clientState, objectTable, condition, targetManager, framework,
+            occultEventTracker, treasureTracker, navigationService, combatAutomationIntegrations, dataManager,
+            SaveConfiguration, log);
         treasureSurveyService = new TreasureSurveyService(
             Configuration, treasureTracker, clientState, condition, framework, addonLifecycle, log);
         watchedEventNotificationService = new WatchedEventNotificationService(
@@ -74,12 +84,14 @@ public sealed class Plugin : IDalamudPlugin
             occultEventTracker, navigationService, log, SaveConfiguration,
             pluginInterface.AssemblyLocation.DirectoryName ?? AppContext.BaseDirectory);
         sceneOverlayRenderer = new SceneOverlayRenderer(
-            Configuration, treasureTracker, occultEventTracker, gameGui, condition, objectTable, vnavmesh);
+            Configuration, treasureTracker, occultEventTracker, navigationService,
+            gameGui, condition, objectTable, vnavmesh);
         mainWindow = new MainWindow(Configuration, treasureTracker, SaveConfiguration, OpenConfiguration,
             OpenCeWatch, OpenFateWatch, OpenMap);
         configWindow = new ConfigWindow(Configuration, SaveConfiguration,
             ApplyOverlayVisibility, ApplyMapDetailsVisibility, pluginInterface, navigationService,
-            treasureTracker, watchedEventNotificationService.ShowPreview,
+            treasureTracker, eventAutomationService,
+            watchedEventNotificationService.ShowPreview,
             watchedEventNotificationService.TestInGameNotificationSound,
             watchedEventNotificationService.TestWindowsNotification,
             () => watchedEventNotificationService.WindowsNotificationTestStatus);
@@ -87,23 +99,27 @@ public sealed class Plugin : IDalamudPlugin
             Configuration, clientState, dataManager, occultEventTracker, navigationService, SaveConfiguration);
         fateWatchWindow = new FateWatchWindow(
             Configuration, clientState, dataManager, occultEventTracker, navigationService, SaveConfiguration);
+        automationWatchWindow = new AutomationWatchWindow(
+            Configuration, clientState, dataManager, occultEventTracker, navigationService, SaveConfiguration);
         treasureMapWindow = new TreasureMapWindow(
             Configuration, treasureTracker, occultEventTracker, partyList, playerState, clientState,
             dataManager, textureProvider, navigationService, OpenCeWatch, OpenFateWatch, OpenConfiguration, SaveConfiguration,
             ToggleMapDetails);
         mapDetailsWindow = new MapDetailsWindow(Configuration, treasureTracker, occultEventTracker,
-            navigationService, treasureSurveyService, treasureMapWindow, OpenCeWatch, OpenFateWatch, SaveConfiguration);
+            eventAutomationService, navigationService, treasureSurveyService, treasureMapWindow,
+            OpenCeWatch, OpenFateWatch, OpenEventAutomation, SaveConfiguration);
         treasureTracker.SupportedTerritoryChanged += OnSupportedTerritoryChanged;
         windows.AddWindow(mainWindow);
         windows.AddWindow(configWindow);
         windows.AddWindow(ceWatchWindow);
         windows.AddWindow(fateWatchWindow);
+        windows.AddWindow(automationWatchWindow);
         windows.AddWindow(treasureMapWindow);
         windows.AddWindow(mapDetailsWindow);
 
         commandManager.AddHandler(MainCommand, new CommandInfo(OnCommand)
         {
-            HelpMessage = "打开新月罗盘；可用 config、ce、fate、reset、next、pause、resume"
+            HelpMessage = "打开新月罗盘；可用 config、ce、fate、reset、next、pause、resume、stop"
         });
         pluginInterface.UiBuilder.Draw += windows.Draw;
         pluginInterface.UiBuilder.Draw += sceneOverlayRenderer.Draw;
@@ -113,7 +129,11 @@ public sealed class Plugin : IDalamudPlugin
         mainWindow.IsOpen = false;
         treasureMapWindow.IsOpen = Configuration.ShowOverlay && treasureTracker.IsSupportedTerritory;
         mapDetailsWindow.IsOpen = treasureMapWindow.IsOpen && Configuration.MapDetailsExpanded;
-        log.Information("CrescentCompass 0.1.0 initialized without DailyRoutines dependencies.");
+        var version = typeof(Plugin).Assembly.GetName().Version?.ToString(3) ?? "unknown";
+        log.Information(
+            "CrescentCompass {Version} initialized with {BuiltInRouteCount} built-in routes and without DailyRoutines dependencies.",
+            version,
+            BuiltInNavigationRouteLibrary.Routes.Count);
     }
 
     public PluginConfiguration Configuration { get; }
@@ -134,6 +154,7 @@ public sealed class Plugin : IDalamudPlugin
         treasureTracker.SupportedTerritoryChanged -= OnSupportedTerritoryChanged;
         treasureSurveyService.Dispose();
         watchedEventNotificationService.Dispose();
+        eventAutomationService.Dispose();
         navigationService.Dispose();
         occultEventTracker.Dispose();
         treasureTracker.Dispose();
@@ -163,6 +184,10 @@ public sealed class Plugin : IDalamudPlugin
             case "cancel":
                 navigationService.Cancel();
                 break;
+            case "stop":
+                eventAutomationService.Stop();
+                navigationService.Cancel("已停止全部自动流程");
+                break;
             case "ce":
                 ceWatchWindow.IsOpen = true;
                 break;
@@ -183,6 +208,8 @@ public sealed class Plugin : IDalamudPlugin
     private void OpenMain() => OpenMap();
 
     private void OpenConfiguration() => configWindow.IsOpen = true;
+
+    private void OpenEventAutomation() => automationWatchWindow.IsOpen = true;
 
     private void OpenCeWatch() => ceWatchWindow.IsOpen = true;
 

@@ -16,4 +16,4 @@ https://raw.githubusercontent.com/G-Yoka/DalamudPluginsCN/main/pluginmaster.json
 
 | 插件 | InternalName | 说明 |
 | --- | --- | --- |
-| [新月罗盘](plugins/CrescentCompass/README.md) | `CrescentCompass` | 新月岛宝箱、寻宝、事件关注、怪物警戒、通知与地图导航助手 |
+| [新月罗盘](plugins/CrescentCompass/README.md) | `CrescentCompass` | 新月岛宝箱与魔法罐寻宝、FATE／CE 提醒与自动参与（测试）、内置路线、怪物警戒及地图导航助手 |
