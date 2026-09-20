@@ -32,31 +32,43 @@ jobs:
               --jq '.[] | select(.tag_name | startswith("CrescentCompass-v")) | .assets[] | select(.name == "CrescentCompass.zip") | .download_count'
           } | awk '{ sum += $1 } END { print sum + 0 }')"
 
-          current="$(python3 -c 'import json; print(json.load(open("stats/downloads.json", encoding="utf-8"))["CrescentCompass"]["downloadCount"])')"
-          if [[ "$total" == "$current" ]]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
           TOTAL="$total" python3 - <<'PY'
           import datetime
           import json
           import os
+          import re
 
           path = "stats/downloads.json"
           with open(path, encoding="utf-8") as stream:
               data = json.load(stream)
 
           entry = data["CrescentCompass"]
-          entry["downloadCount"] = int(os.environ["TOTAL"])
-          entry["updatedAt"] = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+          total = int(os.environ["TOTAL"])
+          changed = entry["downloadCount"] != total
+          if changed:
+              entry["downloadCount"] = total
+              entry["updatedAt"] = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
-          with open(path, "w", encoding="utf-8", newline="\n") as stream:
-              json.dump(data, stream, ensure_ascii=False, indent=2)
-              stream.write("\n")
+              with open(path, "w", encoding="utf-8", newline="\n") as stream:
+                  json.dump(data, stream, ensure_ascii=False, indent=2)
+                  stream.write("\n")
+
+          readme_path = "README.md"
+          with open(readme_path, encoding="utf-8") as stream:
+              readme = stream.read()
+
+          pattern = re.compile(r"(<!-- download-count:CrescentCompass -->)\d+(<!-- /download-count:CrescentCompass -->)")
+          updated_readme, replacements = pattern.subn(rf"\g<1>{total}\g<2>", readme)
+          if replacements != 1:
+              raise RuntimeError("README download-count marker is missing or duplicated")
+          if updated_readme != readme:
+              changed = True
+              with open(readme_path, "w", encoding="utf-8", newline="\n") as stream:
+                  stream.write(updated_readme)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write(f"changed={str(changed).lower()}\n")
           PY
-
-          echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Commit updated counts
         if: steps.counts.outputs.changed == 'true'
@@ -64,6 +76,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add stats/downloads.json
+          git add README.md stats/downloads.json
           git commit -m "更新插件累计下载量"
           git push
