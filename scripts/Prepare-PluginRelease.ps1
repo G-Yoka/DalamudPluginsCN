@@ -90,15 +90,19 @@ try {
     }
     $downloadUrl = "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/$releaseTag/$InternalName.zip"
 
-    Set-JsonProperty $manifest 'DalamudApiLevel' $packedManifest.DalamudApiLevel
-    Set-JsonProperty $manifest 'Changelog' $packedManifest.Changelog
     if ($Channel -eq 'Testing') {
         Set-JsonProperty $manifest 'TestingAssemblyVersion' $packedManifest.AssemblyVersion
+        Set-JsonProperty $manifest 'TestingDalamudApiLevel' $packedManifest.DalamudApiLevel
+        Set-JsonProperty $manifest 'TestingChangelog' $packedManifest.Changelog
         Set-JsonProperty $manifest 'DownloadLinkTesting' $downloadUrl
     }
     else {
         Set-JsonProperty $manifest 'AssemblyVersion' $packedManifest.AssemblyVersion
+        Set-JsonProperty $manifest 'DalamudApiLevel' $packedManifest.DalamudApiLevel
+        Set-JsonProperty $manifest 'Changelog' $packedManifest.Changelog
         Set-JsonProperty $manifest 'TestingAssemblyVersion' $packedManifest.AssemblyVersion
+        Set-JsonProperty $manifest 'TestingDalamudApiLevel' $packedManifest.DalamudApiLevel
+        Set-JsonProperty $manifest 'TestingChangelog' $packedManifest.Changelog
         Set-JsonProperty $manifest 'DownloadLinkInstall' $downloadUrl
         Set-JsonProperty $manifest 'DownloadLinkUpdate' $downloadUrl
         Set-JsonProperty $manifest 'DownloadLinkTesting' $downloadUrl
