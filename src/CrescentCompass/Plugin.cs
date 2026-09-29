@@ -61,7 +61,13 @@ public sealed class Plugin : IDalamudPlugin
 
         Configuration = pluginInterface.GetPluginConfig() as PluginConfiguration ?? new PluginConfiguration();
         Configuration.Normalize();
+        var promotedRouteDuplicates =
+            BuiltInNavigationRouteLibrary.RemovePromotedUserRouteDuplicates(Configuration.CustomNavigationRoutes);
         pluginInterface.SavePluginConfig(Configuration);
+        if (promotedRouteDuplicates > 0)
+            log.Information(
+                "Removed {RouteCount} user-route copies that are now supplied by the built-in route library.",
+                promotedRouteDuplicates);
         treasureTracker = new TreasureTracker(
             Configuration, chatGui, clientState, objectTable, framework, dataManager, log, SaveConfiguration);
         var zoneServerIdReader = new ZoneServerIdReader(sigScanner, log);
@@ -74,7 +80,7 @@ public sealed class Plugin : IDalamudPlugin
         combatAutomationIntegrations = new CombatAutomationIntegrations(
             pluginInterface, commandManager, log);
         eventAutomationService = new EventAutomationService(
-            Configuration, clientState, objectTable, condition, targetManager, framework,
+            Configuration, clientState, objectTable, condition, targetManager, gameGui, framework,
             occultEventTracker, treasureTracker, navigationService, combatAutomationIntegrations, dataManager,
             SaveConfiguration, log);
         treasureSurveyService = new TreasureSurveyService(
@@ -248,6 +254,7 @@ public sealed class Plugin : IDalamudPlugin
     private void SaveConfiguration()
     {
         Configuration.Normalize();
+        BuiltInNavigationRouteLibrary.RemovePromotedUserRouteDuplicates(Configuration.CustomNavigationRoutes);
         pluginInterface.SavePluginConfig(Configuration);
     }
 

@@ -148,6 +148,7 @@ public sealed unsafe class NavigationService : IDisposable
     public string Status { get; private set; } = string.Empty;
     public string DecisionStatus { get; private set; } = "尚未选择路线";
     public bool IsNavigating => active || pendingAetheryte != null || routePlan != null || arrivalFollowUp != null;
+    public long CampReturnCompletedAt { get; private set; }
     public Vector3? ActiveDestination => eventNavigationTarget ??
         (active ? destination : routePlan?.FollowUp.Position ?? pendingFollowUp?.Position);
     public Vector3 ResolvedDestination => destination;
@@ -581,6 +582,7 @@ public sealed unsafe class NavigationService : IDisposable
 
     public bool ReturnToCamp(CrescentAetheryte camp, string name)
     {
+        CampReturnCompletedAt = 0;
         if (tracker.PlayerPosition is not { } player)
         {
             Status = "无法读取玩家位置";
@@ -1677,6 +1679,7 @@ public sealed unsafe class NavigationService : IDisposable
         {
             var completedName = pendingAetheryteName;
             ClearPendingTeleport();
+            CampReturnCompletedAt = Environment.TickCount64;
             Status = $"已返回：{completedName}";
             return true;
         }
@@ -1785,6 +1788,7 @@ public sealed unsafe class NavigationService : IDisposable
         {
             var completedName = pendingAetheryteName;
             ClearPendingTeleport();
+            CampReturnCompletedAt = now;
             Status = $"亚返回完成，已返回：{completedName}";
             return true;
         }

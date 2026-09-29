@@ -20,6 +20,9 @@ public sealed class CombatAutomationIntegrations
     private readonly IPluginLog log;
     private readonly ICallGateSubscriber<string> bossModGetAiPreset;
     private readonly ICallGateSubscriber<string, object> bossModSetAiPreset;
+    private readonly ICallGateSubscriber<uint, bool> bossModHasModuleByDataId;
+    private readonly ICallGateSubscriber<bool> bossModHasActiveModule;
+    private readonly ICallGateSubscriber<string> bossModActiveModuleName;
     private readonly ICallGateSubscriber<bool> aeAssistRunning;
     private readonly ICallGateSubscriber<bool, object> aeAssistSetRunning;
     private readonly ICallGateSubscriber<bool> aeAssistPullEnabled;
@@ -46,6 +49,9 @@ public sealed class CombatAutomationIntegrations
         this.log = log;
         bossModGetAiPreset = pluginInterface.GetIpcSubscriber<string>("BossMod.AI.GetPreset");
         bossModSetAiPreset = pluginInterface.GetIpcSubscriber<string, object>("BossMod.AI.SetPreset");
+        bossModHasModuleByDataId = pluginInterface.GetIpcSubscriber<uint, bool>("BossMod.HasModuleByDataId");
+        bossModHasActiveModule = pluginInterface.GetIpcSubscriber<bool>("BossMod.HasActiveModule");
+        bossModActiveModuleName = pluginInterface.GetIpcSubscriber<string>("BossMod.ActiveModuleName");
         aeAssistRunning = pluginInterface.GetIpcSubscriber<bool>("AEAssist.CombatRoutine.IsRunning");
         aeAssistSetRunning =
             pluginInterface.GetIpcSubscriber<bool, object>("AEAssist.CombatRoutine.SetRunning");
@@ -63,20 +69,39 @@ public sealed class CombatAutomationIntegrations
     public bool IsArmed => armed;
     public string Status { get; private set; } = "战斗接管尚未启动";
 
-    public static bool ManagesTargetSelection(
+    public bool ShouldBossModControlEncounter(
         EventMechanicProvider mechanicProvider,
-        CombatRotationProvider rotationProvider) =>
-        rotationProvider is CombatRotationProvider.AEAssistV3 or
-            CombatRotationProvider.PromeRotation or
-            CombatRotationProvider.RotationSolverReborn or
-            CombatRotationProvider.BossModReborn ||
-        mechanicProvider == EventMechanicProvider.BossModReborn;
+        CombatRotationProvider rotationProvider,
+        IEnumerable<uint> enemyDataIds)
+    {
+        if (!armed || mechanicProvider != EventMechanicProvider.BossModReborn &&
+            rotationProvider != CombatRotationProvider.BossModReborn)
+            return false;
+        try
+        {
+            if (bossModHasActiveModule.HasFunction && bossModHasActiveModule.InvokeFunc()) return true;
+            return bossModHasModuleByDataId.HasFunction &&
+                   enemyDataIds.Where(id => id != 0).Distinct().Any(id => bossModHasModuleByDataId.InvokeFunc(id));
+        }
+        catch (Exception exception)
+        {
+            log.Debug(exception, "Unable to query BossMod encounter-module support.");
+            return false;
+        }
+    }
 
-    public static bool ManagesMovement(
-        EventMechanicProvider mechanicProvider,
-        CombatRotationProvider rotationProvider) =>
-        mechanicProvider == EventMechanicProvider.BossModReborn ||
-        rotationProvider == CombatRotationProvider.BossModReborn;
+    public string BossModModuleLabel()
+    {
+        try
+        {
+            var name = bossModActiveModuleName.HasFunction ? bossModActiveModuleName.InvokeFunc() : string.Empty;
+            return string.IsNullOrWhiteSpace(name) ? "BossmodRebornCN 机制模块" : name;
+        }
+        catch
+        {
+            return "BossmodRebornCN 机制模块";
+        }
+    }
 
     public IReadOnlyList<CombatDependencyStatus> Dependencies =>
     [

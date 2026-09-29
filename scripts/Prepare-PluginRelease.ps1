@@ -1,7 +1,10 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [string]$InternalName
+    [string]$InternalName,
+
+    [ValidateSet('Stable', 'Testing')]
+    [string]$Channel = 'Stable'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -40,6 +43,21 @@ if ([string]::IsNullOrWhiteSpace($version)) {
     throw "Project $($plugin.Project) does not define Version."
 }
 
+function Set-JsonProperty {
+    param(
+        [Parameter(Mandatory)] [psobject]$Object,
+        [Parameter(Mandatory)] [string]$Name,
+        [Parameter(Mandatory)] $Value
+    )
+
+    if ($null -eq $Object.PSObject.Properties[$Name]) {
+        $Object | Add-Member -NotePropertyName $Name -NotePropertyValue $Value
+    }
+    else {
+        $Object.$Name = $Value
+    }
+}
+
 Push-Location $repositoryRoot
 try {
     $testProjectPath = Join-Path $repositoryRoot $plugin.TestProject
@@ -64,18 +82,28 @@ try {
         throw "plugins/$InternalName/manifest.json must define a non-empty Changelog before release."
     }
     $packedManifest = Get-Content -Raw $packedManifestPath | ConvertFrom-Json
-    $releaseTag = "$InternalName-v$version"
+    $releaseTag = if ($Channel -eq 'Testing') {
+        "$InternalName-v$version-testing"
+    }
+    else {
+        "$InternalName-v$version"
+    }
     $downloadUrl = "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/$releaseTag/$InternalName.zip"
 
-    $manifest.AssemblyVersion = $packedManifest.AssemblyVersion
-    $manifest.DalamudApiLevel = $packedManifest.DalamudApiLevel
-    $manifest.DownloadLinkInstall = $downloadUrl
-    $manifest.DownloadLinkUpdate = $downloadUrl
-    $manifest.DownloadLinkTesting = $downloadUrl
-    if ($null -eq $manifest.PSObject.Properties['LastUpdate']) {
-        $manifest | Add-Member -NotePropertyName LastUpdate -NotePropertyValue 0
+    Set-JsonProperty $manifest 'DalamudApiLevel' $packedManifest.DalamudApiLevel
+    Set-JsonProperty $manifest 'Changelog' $packedManifest.Changelog
+    if ($Channel -eq 'Testing') {
+        Set-JsonProperty $manifest 'TestingAssemblyVersion' $packedManifest.AssemblyVersion
+        Set-JsonProperty $manifest 'DownloadLinkTesting' $downloadUrl
     }
-    $manifest.LastUpdate = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    else {
+        Set-JsonProperty $manifest 'AssemblyVersion' $packedManifest.AssemblyVersion
+        Set-JsonProperty $manifest 'TestingAssemblyVersion' $packedManifest.AssemblyVersion
+        Set-JsonProperty $manifest 'DownloadLinkInstall' $downloadUrl
+        Set-JsonProperty $manifest 'DownloadLinkUpdate' $downloadUrl
+        Set-JsonProperty $manifest 'DownloadLinkTesting' $downloadUrl
+    }
+    Set-JsonProperty $manifest 'LastUpdate' ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
     $manifest | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 $manifestPath
 
     $catalogPath = Join-Path $repositoryRoot 'pluginmaster.json'
@@ -87,7 +115,7 @@ try {
     New-Item -ItemType Directory -Force $releaseDirectory | Out-Null
     Copy-Item $packedZipPath (Join-Path $releaseDirectory "$InternalName.zip") -Force
 
-    Write-Host "Prepared $InternalName $version"
+    Write-Host "Prepared $InternalName $version ($Channel)"
     Write-Host "Package: $releaseDirectory/$InternalName.zip"
     Write-Host "Release tag: $releaseTag"
 }

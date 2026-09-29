@@ -31,6 +31,8 @@ public sealed class ConfigWindow : Window
     private string search = string.Empty;
     private string configurationTransferStatus = "可将当前全部设置、路线和校准数据导出为 JSON 文件。";
     private bool configurationTransferFailed;
+    private string routeTransferStatus = string.Empty;
+    private bool routeTransferFailed;
     private int selectedPage;
 
     public ConfigWindow(PluginConfiguration configuration, Action save,
@@ -237,6 +239,87 @@ public sealed class ConfigWindow : Window
     {
         configurationTransferStatus = status;
         configurationTransferFailed = failed;
+    }
+
+    private void BeginRouteExport(CustomNavigationRoute route, bool builtIn)
+    {
+        var directory = Path.Combine(ConfigurationBackupDirectory(), "Routes");
+        Directory.CreateDirectory(directory);
+        var kind = route.Kind == CustomNavigationRouteKind.CriticalEngagement ? "CE" : "FATE";
+        var fileName = SanitizeFileName($"CrescentCompass-路线-{kind}-{route.EventId}-{route.EventName}");
+        fileDialogManager.SaveFileDialog("导出单条路线", "路线 JSON 文件{.json}", fileName, ".json",
+            (success, path) =>
+            {
+                if (!success || string.IsNullOrWhiteSpace(path)) return;
+                try
+                {
+                    if (!path.EndsWith(".json", StringComparison.OrdinalIgnoreCase)) path += ".json";
+                    ConfigurationTransfer.ExportRoute(route, builtIn, path);
+                    routeTransferStatus = $"已导出路线：{path}";
+                    routeTransferFailed = false;
+                }
+                catch (Exception exception)
+                {
+                    routeTransferStatus = $"路线导出失败：{exception.Message}";
+                    routeTransferFailed = true;
+                }
+            }, directory, true);
+    }
+
+    private void BeginRouteImport()
+    {
+        var directory = Path.Combine(ConfigurationBackupDirectory(), "Routes");
+        Directory.CreateDirectory(directory);
+        fileDialogManager.OpenFileDialog("导入单条路线", "路线 JSON 文件{.json}",
+            (success, paths) =>
+            {
+                if (!success || paths.Count == 0) return;
+                ImportRoute(paths[0]);
+            }, 1, directory, true);
+    }
+
+    private void ImportRoute(string path)
+    {
+        try
+        {
+            var route = ConfigurationTransfer.ImportRoute(path);
+            if (BuiltInNavigationRouteLibrary.Routes.Any(item =>
+                    BuiltInNavigationRouteLibrary.RoutesAreIdentical(item, route)))
+            {
+                routeTransferStatus = "该路线与当前内置路线完全一致，已继续使用内置路线。";
+                routeTransferFailed = false;
+                return;
+            }
+
+            if (configuration.CustomNavigationRoutes.Any(item =>
+                    BuiltInNavigationRouteLibrary.RoutesAreIdentical(item, route)))
+            {
+                routeTransferStatus = "相同的用户路线已经存在，未重复导入。";
+                routeTransferFailed = false;
+                return;
+            }
+
+            var replacesBuiltIn = BuiltInNavigationRouteLibrary.Routes.Any(item =>
+                item.TerritoryId == route.TerritoryId && item.EventId == route.EventId && item.Kind == route.Kind);
+            configuration.CustomNavigationRoutes.Add(route);
+            save();
+            routeTransferStatus = $"已导入路线：{route.EventName} #{route.EventId}" +
+                                  (replacesBuiltIn ? "；该用户路线将优先于内置路线。" : "");
+            routeTransferFailed = false;
+        }
+        catch (Exception exception)
+        {
+            routeTransferStatus = $"路线导入失败：{exception.Message}";
+            routeTransferFailed = true;
+        }
+    }
+
+    private static string SanitizeFileName(string value)
+    {
+        var invalid = Path.GetInvalidFileNameChars().ToHashSet();
+        var sanitized = new string(value.Select(character => invalid.Contains(character) ? '_' : character).ToArray())
+            .Trim(' ', '.');
+        return sanitized.Length <= 100 ? sanitized : sanitized[..100];
     }
 
     private void DrawMapMarkers()
@@ -588,8 +671,11 @@ public sealed class ConfigWindow : Window
         DrawBoolean("手动点击使用录制路线", configuration.UseCustomRoutesForManualNavigation,
             value => configuration.UseCustomRoutesForManualNavigation = value);
         ImGui.TextDisabled("内置路线用于缺省回退；更推荐按自己的移动环境录制路线，用户路线会优先使用。");
-        ImGui.TextDisabled("完整配置导入导出只保存用户路线，内置路线会随插件版本更新。");
+        ImGui.TextDisabled("完整配置只保存用户路线；单条路线可独立导入导出，内置路线会随插件版本更新。");
         ImGui.TextColored(UiTheme.Cyan, navigationService.RouteRecordingStatus);
+        if (ImGui.Button("导入路线")) BeginRouteImport();
+        if (!string.IsNullOrWhiteSpace(routeTransferStatus))
+            ImGui.TextColored(routeTransferFailed ? UiTheme.Error : UiTheme.Cyan, routeTransferStatus);
         if (navigationService.IsRecordingCustomRoute)
         {
             if (ImGui.Button("保存当前录制")) navigationService.FinishCustomRouteRecording();
@@ -602,15 +688,19 @@ public sealed class ConfigWindow : Window
             ImGui.TextDisabled("当前没有可用路线。");
             return;
         }
+        ImGui.PushStyleVar(ImGuiStyleVar.CellPadding, new Vector2(6f, 3f));
         if (!ImGui.BeginTable("###CrescentCompass-CustomRoutes", 6,
                 ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.SizingStretchProp))
+        {
+            ImGui.PopStyleVar();
             return;
-        ImGui.TableSetupColumn("区域", ImGuiTableColumnFlags.WidthFixed, 48f);
-        ImGui.TableSetupColumn("来源", ImGuiTableColumnFlags.WidthFixed, 48f);
+        }
+        ImGui.TableSetupColumn("区域", ImGuiTableColumnFlags.WidthFixed, 46f);
+        ImGui.TableSetupColumn("来源", ImGuiTableColumnFlags.WidthFixed, 46f);
         ImGui.TableSetupColumn("起点", ImGuiTableColumnFlags.WidthStretch, 1f);
         ImGui.TableSetupColumn("目标", ImGuiTableColumnFlags.WidthStretch, 1.8f);
-        ImGui.TableSetupColumn("点数", ImGuiTableColumnFlags.WidthFixed, 50f);
-        ImGui.TableSetupColumn("操作", ImGuiTableColumnFlags.WidthFixed, 92f);
+        ImGui.TableSetupColumn("点数", ImGuiTableColumnFlags.WidthFixed, 76f);
+        ImGui.TableSetupColumn("操作", ImGuiTableColumnFlags.WidthFixed, 132f);
         ImGui.TableHeadersRow();
         foreach (var route in routes
                      .OrderBy(item => item.TerritoryId)
@@ -638,13 +728,18 @@ public sealed class ConfigWindow : Window
             if (ImGui.SmallButton($"测试##custom-route-test-{route.Id}"))
                 navigationService.TestCustomRoute(route.Id);
             if (route.TerritoryId != treasureTracker.TerritoryId) ImGui.EndDisabled();
-            ImGui.SameLine(0f, 3f);
-            if (builtIn)
-                ImGui.TextDisabled("随插件");
-            else if (ImGui.SmallButton($"删除##custom-route-delete-{route.Id}"))
-                navigationService.DeleteCustomRoute(route.Id);
+            ImGui.SameLine(0f, 6f);
+            if (ImGui.SmallButton($"导出##custom-route-export-{route.Id}"))
+                BeginRouteExport(route, builtIn);
+            if (!builtIn)
+            {
+                ImGui.SameLine(0f, 6f);
+                if (ImGui.SmallButton($"删除##custom-route-delete-{route.Id}"))
+                    navigationService.DeleteCustomRoute(route.Id);
+            }
         }
         ImGui.EndTable();
+        ImGui.PopStyleVar();
     }
 
     private void DrawDiagnostics()

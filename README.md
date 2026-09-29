@@ -12,6 +12,8 @@ https://raw.githubusercontent.com/G-Yoka/DalamudPluginsCN/main/pluginmaster.json
 
 保存并刷新插件安装器后，即可搜索、安装和更新本仓库中的插件。
 
+如需参与测试，请在插件安装器中右键“新月罗盘”，选择“接收插件测试版本”。测试版本会单独更新，未启用此选项的用户继续使用稳定版本。
+
 ## 插件列表
 
 <table>

@@ -15,6 +15,29 @@ public static class BuiltInNavigationRouteLibrary
     public static bool IsBuiltIn(CustomNavigationRoute route) =>
         route.Id.StartsWith("builtin-", StringComparison.Ordinal);
 
+    public static int RemovePromotedUserRouteDuplicates(List<CustomNavigationRoute> userRoutes) =>
+        userRoutes.RemoveAll(userRoute => Routes.Any(builtInRoute => RoutesAreIdentical(userRoute, builtInRoute)));
+
+    public static bool RoutesAreIdentical(CustomNavigationRoute left, CustomNavigationRoute right)
+    {
+        if (left.TerritoryId != right.TerritoryId ||
+            left.SourceAetheryteDataId != right.SourceAetheryteDataId ||
+            left.Kind != right.Kind || left.EventId != right.EventId ||
+            left.Points.Count != right.Points.Count)
+            return false;
+
+        for (var index = 0; index < left.Points.Count; index++)
+        {
+            var leftPoint = left.Points[index];
+            var rightPoint = right.Points[index];
+            if (leftPoint.X != rightPoint.X || leftPoint.Y != rightPoint.Y || leftPoint.Z != rightPoint.Z ||
+                leftPoint.Action != rightPoint.Action)
+                return false;
+        }
+
+        return true;
+    }
+
     private static IReadOnlyList<CustomNavigationRoute> Load()
     {
         try

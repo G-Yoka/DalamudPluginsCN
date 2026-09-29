@@ -1,11 +1,13 @@
 using System.Reflection;
 using System.Text.Json;
+using CrescentCompass.Core;
 
 namespace CrescentCompass.Configuration;
 
 public static class ConfigurationTransfer
 {
     private const string FormatName = "CrescentCompass.Configuration";
+    private const string RouteFormatName = "CrescentCompass.NavigationRoute";
     private const int FormatVersion = 1;
     private const long MaximumImportBytes = 64L * 1024 * 1024;
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -29,17 +31,52 @@ public static class ConfigurationTransfer
         WriteAtomic(path, JsonSerializer.Serialize(package, JsonOptions));
     }
 
+    public static void ExportRoute(CustomNavigationRoute route, bool builtIn, string path)
+    {
+        var package = new NavigationRouteExportPackage
+        {
+            Format = RouteFormatName,
+            FormatVersion = FormatVersion,
+            ExportedAtUtc = DateTimeOffset.UtcNow,
+            PluginVersion = typeof(ConfigurationTransfer).Assembly.GetName().Version?.ToString() ?? "unknown",
+            Source = builtIn ? "BuiltIn" : "User",
+            Route = route
+        };
+        WriteAtomic(path, JsonSerializer.Serialize(package, JsonOptions));
+    }
+
+    public static CustomNavigationRoute ImportRoute(string path)
+    {
+        var file = ValidateImportFile(path, "路线");
+
+        NavigationRouteExportPackage? package;
+        try
+        {
+            package = JsonSerializer.Deserialize<NavigationRouteExportPackage>(File.ReadAllText(file.FullName), JsonOptions);
+        }
+        catch (JsonException exception)
+        {
+            throw new InvalidDataException("JSON 内容无法解析", exception);
+        }
+
+        if (package == null || package.Format != RouteFormatName || package.FormatVersion is < 1 or > FormatVersion)
+            throw new InvalidDataException("这不是受支持的新月罗盘单条路线文件");
+
+        var route = package.Route ?? throw new InvalidDataException("路线文件缺少 Route 内容");
+        ValidateRoute(route);
+        route.Id = Guid.NewGuid().ToString("N");
+        route.EventName = route.EventName.Trim();
+        return route;
+    }
+
     public static PluginConfiguration Import(string path)
     {
-        var file = new FileInfo(path);
-        if (!file.Exists) throw new InvalidDataException("选择的配置文件不存在");
-        if (file.Length <= 0 || file.Length > MaximumImportBytes)
-            throw new InvalidDataException("配置文件为空或超过 64 MB");
+        var file = ValidateImportFile(path, "配置");
 
         ConfigurationExportPackage? package;
         try
         {
-            package = JsonSerializer.Deserialize<ConfigurationExportPackage>(File.ReadAllText(path), JsonOptions);
+            package = JsonSerializer.Deserialize<ConfigurationExportPackage>(File.ReadAllText(file.FullName), JsonOptions);
         }
         catch (JsonException exception)
         {
@@ -75,16 +112,30 @@ public static class ConfigurationTransfer
         if (configuration.CustomNavigationRoutes == null)
             throw new InvalidDataException("配置文件缺少自定义路线列表");
         foreach (var route in configuration.CustomNavigationRoutes)
-        {
-            if (route == null || string.IsNullOrWhiteSpace(route.Id) || route.EventId == 0 ||
-                route.SourceAetheryteDataId == 0 || route.Points == null || route.Points.Count < 2 ||
-                !Enum.IsDefined(route.Kind))
-                throw new InvalidDataException("配置文件包含无效的自定义路线");
-            if (route.Points.Any(point => point == null || !float.IsFinite(point.X) ||
-                                          !float.IsFinite(point.Y) || !float.IsFinite(point.Z) ||
-                                          !Enum.IsDefined(point.Action)))
-                throw new InvalidDataException($"路线“{route.EventName}”包含无效坐标或动作");
-        }
+            ValidateRoute(route);
+    }
+
+    private static void ValidateRoute(CustomNavigationRoute? route)
+    {
+        if (route == null || string.IsNullOrWhiteSpace(route.Id) || route.EventId == 0 ||
+            route.SourceAetheryteDataId == 0 || route.Points == null || route.Points.Count < 2 ||
+            route.TerritoryId is not PotCandidateCatalog.SouthHornTerritoryId and
+                not PotCandidateCatalog.NorthHornTerritoryId ||
+            !Enum.IsDefined(route.Kind))
+            throw new InvalidDataException("文件包含无效的自定义路线");
+        if (route.Points.Any(point => point == null || !float.IsFinite(point.X) ||
+                                      !float.IsFinite(point.Y) || !float.IsFinite(point.Z) ||
+                                      !Enum.IsDefined(point.Action)))
+            throw new InvalidDataException($"路线“{route.EventName}”包含无效坐标或动作");
+    }
+
+    private static FileInfo ValidateImportFile(string path, string kind)
+    {
+        var file = new FileInfo(path);
+        if (!file.Exists) throw new InvalidDataException($"选择的{kind}文件不存在");
+        if (file.Length <= 0 || file.Length > MaximumImportBytes)
+            throw new InvalidDataException($"{kind}文件为空或超过 64 MB");
+        return file;
     }
 
     private static void WriteAtomic(string path, string content)
@@ -111,5 +162,15 @@ public static class ConfigurationTransfer
         public DateTimeOffset ExportedAtUtc { get; set; }
         public string PluginVersion { get; set; } = string.Empty;
         public PluginConfiguration? Configuration { get; set; }
+    }
+
+    private sealed class NavigationRouteExportPackage
+    {
+        public string Format { get; set; } = string.Empty;
+        public int FormatVersion { get; set; }
+        public DateTimeOffset ExportedAtUtc { get; set; }
+        public string PluginVersion { get; set; } = string.Empty;
+        public string Source { get; set; } = string.Empty;
+        public CustomNavigationRoute? Route { get; set; }
     }
 }

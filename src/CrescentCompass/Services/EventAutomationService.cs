@@ -12,6 +12,9 @@ using FFXIVClientStructs.FFXIV.Client.Game.Character;
 using FFXIVClientStructs.FFXIV.Client.Game.Control;
 using FFXIVClientStructs.FFXIV.Client.Game.Fate;
 using FFXIVClientStructs.FFXIV.Client.Game.InstanceContent;
+using FFXIVClientStructs.FFXIV.Client.Game.UI;
+using FFXIVClientStructs.FFXIV.Client.UI.Agent;
+using FFXIVClientStructs.FFXIV.Component.GUI;
 using NativeGameObject = FFXIVClientStructs.FFXIV.Client.Game.Object.GameObject;
 using NativeTreasure = FFXIVClientStructs.FFXIV.Client.Game.Object.Treasure;
 using EventItemRow = Lumina.Excel.Sheets.EventItem;
@@ -32,6 +35,7 @@ public enum EventAutomationStage
     WaitingForMagicPot,
     AwaitingMagicPotReward,
     TreasureHunting,
+    AwaitingRevive,
     Suspended
 }
 
@@ -56,6 +60,7 @@ public sealed unsafe class EventAutomationService : IDisposable
     private readonly IObjectTable objectTable;
     private readonly ICondition condition;
     private readonly ITargetManager targetManager;
+    private readonly IGameGui gameGui;
     private readonly IFramework framework;
     private readonly OccultEventTracker eventTracker;
     private readonly TreasureTracker treasureTracker;
@@ -92,6 +97,11 @@ public sealed unsafe class EventAutomationService : IDisposable
     private bool awaitingSpawnedMagicPotTreasure;
     private bool navigationIssued;
     private bool routeRecordingWasActive;
+    private EventAutomationStage stageBeforeDeath;
+    private long nextReviveAcceptance;
+    private long reviveRecoveredAt;
+    private bool reviveAcceptanceIssued;
+    private long returnStartedAt;
     private bool disposed;
 
     public EventAutomationService(
@@ -100,6 +110,7 @@ public sealed unsafe class EventAutomationService : IDisposable
         IObjectTable objectTable,
         ICondition condition,
         ITargetManager targetManager,
+        IGameGui gameGui,
         IFramework framework,
         OccultEventTracker eventTracker,
         TreasureTracker treasureTracker,
@@ -114,6 +125,7 @@ public sealed unsafe class EventAutomationService : IDisposable
         this.objectTable = objectTable;
         this.condition = condition;
         this.targetManager = targetManager;
+        this.gameGui = gameGui;
         this.framework = framework;
         this.eventTracker = eventTracker;
         this.treasureTracker = treasureTracker;
@@ -183,6 +195,7 @@ public sealed unsafe class EventAutomationService : IDisposable
     public void Resume()
     {
         if (!configuration.EnableEventAutomation) return;
+        if (TryAdoptCurrentEvent(Environment.TickCount64, "自动事件已恢复")) return;
         Reset(EventAutomationStage.Waiting, "自动事件已恢复，正在等待目标", true);
     }
 
@@ -227,7 +240,12 @@ public sealed unsafe class EventAutomationService : IDisposable
 
         if (condition[ConditionFlag.Unconscious])
         {
-            Suspend("角色无法行动，自动事件已暂停");
+            UpdateAwaitingRevive(now);
+            return;
+        }
+        if (Stage == EventAutomationStage.AwaitingRevive)
+        {
+            UpdateReviveRecovery(player.Position, now);
             return;
         }
 
@@ -248,6 +266,7 @@ public sealed unsafe class EventAutomationService : IDisposable
 
         if (Stage == EventAutomationStage.Disabled)
         {
+            if (TryAdoptCurrentEvent(now, "自动事件已启动")) return;
             Stage = EventAutomationStage.Waiting;
             Status = "自动事件已启用，正在等待目标";
         }
@@ -618,11 +637,7 @@ public sealed unsafe class EventAutomationService : IDisposable
             }
             else if (active.Value.Kind == OccultEventKind.CriticalEngagement)
             {
-                var engagement = CombatAutomationIntegrations.ManagesTargetSelection(
-                    configuration.EventMechanicProvider,
-                    configuration.CombatRotationProvider)
-                    ? $"目标选择已交由 {combatIntegrations.Status} · {active.Value.StateText}"
-                    : MaintainCriticalEngagement(active.Value, playerPosition, now);
+                var engagement = MaintainOrHandOffCriticalEngagement(active.Value, playerPosition, now);
                 Status = $"正在参与 {active.Value.Name} · {engagement}";
             }
             else
@@ -654,15 +669,37 @@ public sealed unsafe class EventAutomationService : IDisposable
         Vector3 playerPosition,
         long now)
     {
-        if (!combatIntegrations.IsArmed ||
-            !CombatAutomationIntegrations.ManagesMovement(
+        var enemyDataIds = objectTable.OfType<IBattleNpc>()
+            .Where(item => IsFateEnemy(item, active.DataId))
+            .Select(item => item.BaseId);
+        if (!combatIntegrations.ShouldBossModControlEncounter(
                 configuration.EventMechanicProvider,
-                configuration.CombatRotationProvider))
+                configuration.CombatRotationProvider,
+                enemyDataIds))
             return MaintainFateEngagement(active, playerPosition, now);
 
         if (navigationService.IsNavigating) navigationService.Cancel(null);
         navigationIssued = false;
-        return $"移动与目标追击已交由 {combatIntegrations.Status} · {active.StateText}";
+        return $"移动与目标优先级已交由 {combatIntegrations.BossModModuleLabel()} · {active.StateText}";
+    }
+
+    private string MaintainOrHandOffCriticalEngagement(
+        OccultEventSnapshot active,
+        Vector3 playerPosition,
+        long now)
+    {
+        var enemyDataIds = objectTable.OfType<IBattleNpc>()
+            .Where(item => IsCriticalEngagementEnemy(item, active.Position))
+            .Select(item => item.BaseId);
+        if (!combatIntegrations.ShouldBossModControlEncounter(
+                configuration.EventMechanicProvider,
+                configuration.CombatRotationProvider,
+                enemyDataIds))
+            return MaintainCriticalEngagement(active, playerPosition, now);
+
+        if (navigationService.IsNavigating) navigationService.Cancel(null);
+        navigationIssued = false;
+        return $"移动与目标优先级已交由 {combatIntegrations.BossModModuleLabel()} · {active.StateText}";
     }
 
     private void BeginSettling(string status)
@@ -722,12 +759,21 @@ public sealed unsafe class EventAutomationService : IDisposable
             Suspend($"无法返回等待点：{navigationService.Status}");
             return;
         }
+        returnStartedAt = Environment.TickCount64;
         Stage = EventAutomationStage.Returning;
         Status = "正在返回等待点";
     }
 
     private void UpdateReturning(Vector3 playerPosition, long now)
     {
+        if (returnStartedAt != 0 && navigationService.CampReturnCompletedAt >= returnStartedAt)
+        {
+            navigationIssued = false;
+            returnStartedAt = 0;
+            Stage = EventAutomationStage.Waiting;
+            Status = "亚凡回已抵达营地，正在等待新事件";
+            return;
+        }
         var point = CurrentWaitingPoint();
         if (point is null)
         {
@@ -751,6 +797,7 @@ public sealed unsafe class EventAutomationService : IDisposable
             navigationService.Cancel(null);
             target = next;
             targetLastSeenAt = now;
+            returnStartedAt = 0;
             navigationIssued = navigationService.NavigateToEvent(next.Position, $"自动事件：{next.Name}",
                 next.DataId, RouteKind(next.Kind), true);
             if (!navigationIssued)
@@ -767,6 +814,7 @@ public sealed unsafe class EventAutomationService : IDisposable
         {
             navigationService.Cancel(null);
             navigationIssued = false;
+            returnStartedAt = 0;
             Stage = EventAutomationStage.Waiting;
             Status = "已返回等待点，正在等待新事件";
             return;
@@ -1333,6 +1381,114 @@ public sealed unsafe class EventAutomationService : IDisposable
         log.Warning("Event automation suspended: {Reason}", reason);
     }
 
+    private void UpdateAwaitingRevive(long now)
+    {
+        if (Stage != EventAutomationStage.AwaitingRevive)
+        {
+            stageBeforeDeath = Stage;
+            navigationService.Cancel(null);
+            combatIntegrations.Disarm();
+            navigationIssued = false;
+            targetManager.Target = null;
+            nextReviveAcceptance = 0;
+            reviveRecoveredAt = 0;
+            reviveAcceptanceIssued = false;
+            Stage = EventAutomationStage.AwaitingRevive;
+        }
+
+        if (now < nextReviveAcceptance)
+        {
+            Status = reviveAcceptanceIssued ? "已接受复活，正在等待角色恢复" : "角色已倒地，正在等待他人复活";
+            return;
+        }
+        nextReviveAcceptance = now + 1_000;
+        if (TryAcceptPlayerRaise())
+        {
+            reviveAcceptanceIssued = true;
+            Status = "已自动接受他人复活，正在等待角色恢复";
+        }
+        else
+            Status = reviveAcceptanceIssued ? "已接受复活，正在等待角色恢复" : "角色已倒地，正在等待他人复活";
+    }
+
+    private bool TryAcceptPlayerRaise()
+    {
+        var revive = AgentRevive.Instance();
+        if (revive == null || !revive->IsAgentActive() || revive->State != ReviveState.Revivable ||
+            revive->ResurrectingPlayerId == 0)
+            return false;
+        var addon = gameGui.GetAddonByName<AtkUnitBase>("SelectYesno");
+        return addon != null && addon->IsVisible && addon->FireCallbackInt(0);
+    }
+
+    private void UpdateReviveRecovery(Vector3 playerPosition, long now)
+    {
+        if (condition[ConditionFlag.BetweenAreas] || condition[ConditionFlag.BetweenAreas51])
+        {
+            Status = "复活处理中，正在等待区域状态恢复";
+            return;
+        }
+        if (reviveRecoveredAt == 0)
+        {
+            reviveRecoveredAt = now;
+            Status = "复活完成，正在等待角色恢复可操作状态";
+            return;
+        }
+        if (now - reviveRecoveredAt < 2_500)
+        {
+            Status = "复活完成，正在等待角色恢复可操作状态";
+            return;
+        }
+
+        nextReviveAcceptance = 0;
+        reviveRecoveredAt = 0;
+        reviveAcceptanceIssued = false;
+        var previousTarget = target;
+        if (TryAdoptCurrentEvent(now, "复活完成"))
+        {
+            UpdateAwaitingStart(playerPosition, now);
+            return;
+        }
+
+        if (previousTarget is not null || stageBeforeDeath is EventAutomationStage.Participating or
+            EventAutomationStage.AwaitingStart or EventAutomationStage.Traveling)
+        {
+            BeginSettling(previousTarget is { Name.Length: > 0 } ended
+                ? $"复活后 {ended.Name} 已结束，正在等待结算"
+                : "复活后原事件已结束，正在等待结算");
+            return;
+        }
+
+        Reset(EventAutomationStage.Waiting, "复活完成，正在重新选择自动事件", true);
+    }
+
+    private bool TryAdoptCurrentEvent(long now, string statusPrefix)
+    {
+        var currentCeId = CurrentCriticalEngagementId();
+        var currentFateId = CurrentFateId();
+        var active = currentCeId != 0
+            ? eventTracker.ActiveEvents.FirstOrDefault(item =>
+                item.DataId == currentCeId && item.Kind == OccultEventKind.CriticalEngagement)
+            : currentFateId != 0
+                ? eventTracker.ActiveEvents.FirstOrDefault(item =>
+                    item.DataId == currentFateId &&
+                    item.Kind is OccultEventKind.Fate or OccultEventKind.MagicPot)
+                : default;
+
+        if (active.DataId == 0 && target is { } previous &&
+            (previous.Kind == OccultEventKind.CriticalEngagement && previous.DataId == currentCeId ||
+             previous.Kind is OccultEventKind.Fate or OccultEventKind.MagicPot && previous.DataId == currentFateId))
+            active = previous;
+        if (active.DataId == 0) return false;
+
+        Reset(EventAutomationStage.AwaitingStart,
+            $"{statusPrefix}，正在重新接管 {active.Name}", true);
+        target = active;
+        targetLastSeenAt = now;
+        awaitingStartedAt = now;
+        return true;
+    }
+
     private void Reset(EventAutomationStage stage, string status, bool cancelNavigation)
     {
         if (cancelNavigation) navigationService.Cancel(null);
@@ -1353,6 +1509,11 @@ public sealed unsafe class EventAutomationService : IDisposable
         treasureGuidanceLostAt = 0;
         ResetTreasureCandidateFailures();
         navigationIssued = false;
+        stageBeforeDeath = EventAutomationStage.Disabled;
+        nextReviveAcceptance = 0;
+        reviveRecoveredAt = 0;
+        reviveAcceptanceIssued = false;
+        returnStartedAt = 0;
         Stage = stage;
         Status = status;
     }
@@ -1381,16 +1542,25 @@ public sealed unsafe class EventAutomationService : IDisposable
     }
 
     private static bool IsCurrentFate(uint fateId)
+        => CurrentFateId() == fateId;
+
+    private static uint CurrentFateId()
     {
         var fateManager = FateManager.Instance();
-        return fateManager != null && fateManager->CurrentFate != null &&
-               fateManager->CurrentFate->FateId == fateId;
+        if (fateManager == null || fateManager->CurrentFate == null) return 0;
+        var fateId = fateManager->CurrentFate->FateId;
+        return fateId > 0 ? (uint)fateId : 0;
     }
 
     private static bool IsCurrentCriticalEngagement(uint eventId)
+        => CurrentCriticalEngagementId() == eventId;
+
+    private static uint CurrentCriticalEngagementId()
     {
         var container = DynamicEventContainer.GetInstance();
-        return container != null && container->CurrentEventId == eventId;
+        if (container == null) return 0;
+        var eventId = container->CurrentEventId;
+        return eventId > 0 ? (uint)eventId : 0;
     }
 
     private static bool IsEventExplicitlyComplete(
@@ -1494,7 +1664,7 @@ public sealed unsafe class EventAutomationService : IDisposable
 
     private bool PrepareCriticalEngagement(OccultEventSnapshot active, Vector3 playerPosition, long now)
     {
-        var enemy = AcquireCriticalEngagementTarget(active.Position, playerPosition);
+        var enemy = AcquireCriticalEngagementTarget(active.DataId, active.Position, playerPosition);
         if (enemy is null)
         {
             if (navigationService.IsNavigating) navigationService.Cancel(null);
@@ -1508,7 +1678,7 @@ public sealed unsafe class EventAutomationService : IDisposable
 
     private string MaintainCriticalEngagement(OccultEventSnapshot active, Vector3 playerPosition, long now)
     {
-        var enemy = AcquireCriticalEngagementTarget(active.Position, playerPosition);
+        var enemy = AcquireCriticalEngagementTarget(active.DataId, active.Position, playerPosition);
         if (enemy is null)
         {
             if (navigationService.IsNavigating) navigationService.Cancel(null);
@@ -1591,15 +1761,19 @@ public sealed unsafe class EventAutomationService : IDisposable
     private IBattleNpc? FindFateEnemy(uint fateId, Vector3 playerPosition) =>
         objectTable.OfType<IBattleNpc>()
             .Where(item => IsFateEnemy(item, fateId))
-            .OrderByDescending(item => item.MaxHp)
+            .OrderBy(item => EventTargetPriorityCatalog.Priority(
+                CustomNavigationRouteKind.Fate, fateId, item.BaseId))
+            .ThenByDescending(item => item.MaxHp)
             .ThenBy(item => HorizontalDistance(playerPosition, item.Position) - MathF.Max(0f, item.HitboxRadius))
             .FirstOrDefault();
 
-    private IBattleNpc? AcquireCriticalEngagementTarget(Vector3 eventCenter, Vector3 playerPosition)
+    private IBattleNpc? AcquireCriticalEngagementTarget(uint eventId, Vector3 eventCenter, Vector3 playerPosition)
     {
         var enemy = objectTable.OfType<IBattleNpc>()
             .Where(item => IsCriticalEngagementEnemy(item, eventCenter))
-            .OrderByDescending(item => item.MaxHp)
+            .OrderBy(item => EventTargetPriorityCatalog.Priority(
+                CustomNavigationRouteKind.CriticalEngagement, eventId, item.BaseId))
+            .ThenByDescending(item => item.MaxHp)
             .ThenBy(item => HorizontalDistance(playerPosition, item.Position) - MathF.Max(0f, item.HitboxRadius))
             .FirstOrDefault();
         if (enemy is not null)

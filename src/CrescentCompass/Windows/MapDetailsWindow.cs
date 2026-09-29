@@ -355,6 +355,7 @@ public sealed class MapDetailsWindow : Window
         EventAutomationStage.WaitingForMagicPot => "等待魔法罐出现",
         EventAutomationStage.AwaitingMagicPotReward => "确认魔法罐奖励",
         EventAutomationStage.TreasureHunting => "自动寻找财宝",
+        EventAutomationStage.AwaitingRevive => "等待复活",
         EventAutomationStage.Suspended => "已暂停",
         _ => stage.ToString()
     };
