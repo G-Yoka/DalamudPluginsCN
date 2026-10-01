@@ -21,6 +21,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly ConfigWindow configWindow;
     private readonly TreasureTracker treasureTracker;
     private readonly OccultEventTracker occultEventTracker;
+    private readonly StatisticsService statisticsService;
     private readonly NavigationService navigationService;
     private readonly CombatAutomationIntegrations combatAutomationIntegrations;
     private readonly EventAutomationService eventAutomationService;
@@ -73,6 +74,8 @@ public sealed class Plugin : IDalamudPlugin
         var zoneServerIdReader = new ZoneServerIdReader(sigScanner, log);
         occultEventTracker = new OccultEventTracker(
             fateTable, clientState, dataManager, framework, playerState, zoneServerIdReader);
+        statisticsService = new StatisticsService(
+            Configuration, chatGui, clientState, playerState, framework, fateTable, occultEventTracker, SaveConfiguration);
         var vnavmesh = new VNavmeshIpc(pluginInterface);
         navigationService = new NavigationService(
             Configuration, treasureTracker, vnavmesh, keyState, framework,
@@ -112,7 +115,7 @@ public sealed class Plugin : IDalamudPlugin
             dataManager, textureProvider, navigationService, OpenCeWatch, OpenFateWatch, OpenConfiguration, SaveConfiguration,
             ToggleMapDetails);
         mapDetailsWindow = new MapDetailsWindow(Configuration, treasureTracker, occultEventTracker,
-            eventAutomationService, navigationService, treasureSurveyService, treasureMapWindow,
+            eventAutomationService, navigationService, treasureSurveyService, statisticsService, treasureMapWindow,
             OpenCeWatch, OpenFateWatch, OpenEventAutomation, SaveConfiguration);
         treasureTracker.SupportedTerritoryChanged += OnSupportedTerritoryChanged;
         windows.AddWindow(mainWindow);
@@ -162,6 +165,7 @@ public sealed class Plugin : IDalamudPlugin
         watchedEventNotificationService.Dispose();
         eventAutomationService.Dispose();
         navigationService.Dispose();
+        statisticsService.Dispose();
         occultEventTracker.Dispose();
         treasureTracker.Dispose();
     }

@@ -16,17 +16,20 @@ public sealed class MapDetailsWindow : Window
     private readonly EventAutomationService eventAutomationService;
     private readonly NavigationService navigationService;
     private readonly TreasureSurveyService treasureSurveyService;
+    private readonly StatisticsService statisticsService;
     private readonly TreasureMapWindow mapWindow;
     private readonly Action openCeWatch;
     private readonly Action openFateWatch;
     private readonly Action openAutomationTargets;
     private readonly Action save;
     private int page;
+    private bool showCumulativeStatistics;
+    private bool confirmCumulativeReset;
 
     public MapDetailsWindow(PluginConfiguration configuration, TreasureTracker tracker,
         OccultEventTracker eventTracker, EventAutomationService eventAutomationService,
         NavigationService navigationService,
-        TreasureSurveyService treasureSurveyService, TreasureMapWindow mapWindow,
+        TreasureSurveyService treasureSurveyService, StatisticsService statisticsService, TreasureMapWindow mapWindow,
         Action openCeWatch, Action openFateWatch, Action openAutomationTargets, Action save)
         : base("新月罗盘详情###CrescentCompass-MapDetails")
     {
@@ -36,12 +39,13 @@ public sealed class MapDetailsWindow : Window
         this.eventAutomationService = eventAutomationService;
         this.navigationService = navigationService;
         this.treasureSurveyService = treasureSurveyService;
+        this.statisticsService = statisticsService;
         this.mapWindow = mapWindow;
         this.openCeWatch = openCeWatch;
         this.openFateWatch = openFateWatch;
         this.openAutomationTargets = openAutomationTargets;
         this.save = save;
-        Flags = ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoMove;
+        Flags = ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoScrollbar;
         SizeConstraints = new WindowSizeConstraints
         {
             MinimumSize = new(270f, 320f),
@@ -106,6 +110,7 @@ public sealed class MapDetailsWindow : Window
         var colors = UiTheme.PushContentStyle(configuration.ComfortableUiDensity);
         try
         {
+            EnsureVisiblePage();
             DrawTabs();
             ImGui.Separator();
             switch (page)
@@ -114,7 +119,8 @@ public sealed class MapDetailsWindow : Window
                 case 1: DrawAutomation(); break;
                 case 2: DrawChests(); break;
                 case 3: DrawTreasure(); break;
-                default: DrawRoute(); break;
+                case 4: DrawRoute(); break;
+                case 5: DrawStatistics(); break;
             }
         }
         finally { UiTheme.PopContentStyle(colors); }
@@ -122,18 +128,45 @@ public sealed class MapDetailsWindow : Window
 
     private void DrawTabs()
     {
+        var visiblePages = Enumerable.Range(0, 6).Where(IsPageVisible).ToArray();
+        if (visiblePages.Length == 0) return;
         var available = ImGui.GetContentRegionAvail().X;
-        var width = MathF.Max(40f, (available - ImGui.GetStyle().ItemSpacing.X * 4f) / 5f);
-        if (DrawTab("事件", page == 0, width)) page = 0;
-        ImGui.SameLine();
-        if (DrawTab("自动", page == 1, width)) page = 1;
-        ImGui.SameLine();
-        if (DrawTab("宝箱", page == 2, width)) page = 2;
-        ImGui.SameLine();
-        if (DrawTab("寻宝", page == 3, width)) page = 3;
-        ImGui.SameLine();
-        if (DrawTab("路线", page == 4, width)) page = 4;
+        var width = MathF.Max(40f,
+            (available - ImGui.GetStyle().ItemSpacing.X * (visiblePages.Length - 1)) / visiblePages.Length);
+        for (var index = 0; index < visiblePages.Length; index++)
+        {
+            var visiblePage = visiblePages[index];
+            if (index > 0) ImGui.SameLine();
+            if (DrawTab(PageLabel(visiblePage), page == visiblePage, width)) page = visiblePage;
+        }
     }
+
+    private void EnsureVisiblePage()
+    {
+        if (IsPageVisible(page)) return;
+        page = Enumerable.Range(0, 6).FirstOrDefault(IsPageVisible);
+    }
+
+    private bool IsPageVisible(int value) => value switch
+    {
+        0 => configuration.ShowMapDetailsEvents,
+        1 => configuration.ShowMapDetailsAutomation,
+        2 => configuration.ShowMapDetailsChests,
+        3 => configuration.ShowMapDetailsTreasure,
+        4 => configuration.ShowMapDetailsRoutes,
+        5 => configuration.ShowMapDetailsStatistics,
+        _ => false
+    };
+
+    private static string PageLabel(int value) => value switch
+    {
+        0 => "事件",
+        1 => "自动",
+        2 => "宝箱",
+        3 => "寻宝",
+        4 => "路线",
+        _ => "统计"
+    };
 
     private void DrawAutomation()
     {
@@ -336,6 +369,141 @@ public sealed class MapDetailsWindow : Window
         if (navigationService.DisplayPath.Count > 1)
             ImGui.TextDisabled($"当前路径 {navigationService.DisplayPath.Count} 个节点");
     }
+
+    private void DrawStatistics()
+    {
+        var available = ImGui.GetContentRegionAvail().X;
+        var selectorWidth = (available - ImGui.GetStyle().ItemSpacing.X) / 2f;
+        if (DrawTab("本次", !showCumulativeStatistics, selectorWidth)) showCumulativeStatistics = false;
+        ImGui.SameLine();
+        if (DrawTab("累计", showCumulativeStatistics, selectorWidth)) showCumulativeStatistics = true;
+
+        if (!ImGui.BeginChild("###CrescentCompass-StatisticsContent", Vector2.Zero, false,
+                ImGuiWindowFlags.NoScrollbar))
+        {
+            ImGui.EndChild();
+            return;
+        }
+
+        var totals = showCumulativeStatistics ? statisticsService.Cumulative : statisticsService.Session;
+        var north = tracker.TerritoryId == PotCandidateCatalog.NorthHornTerritoryId;
+        var areaTotals = north ? totals.North : totals.South;
+        var fateCount = areaTotals.FateCount;
+        var ceCount = areaTotals.CriticalEngagementCount;
+        var elapsed = statisticsService.SessionElapsedForTerritory(tracker.TerritoryId);
+        UiTheme.SectionTitle(north ? "北岛总览" : "南岛总览");
+        if (!showCumulativeStatistics)
+        {
+            var hours = Math.Max(elapsed.TotalHours, 1d / 60d);
+            ImGui.TextDisabled($"{FormatElapsed(elapsed)} · {(fateCount + ceCount) / hours:F1} 次／小时");
+        }
+        if (ImGui.BeginTable("###CrescentCompass-StatisticsSummary", 3,
+                ImGuiTableFlags.SizingStretchSame | ImGuiTableFlags.NoSavedSettings))
+        {
+            DrawCompactStatCell("CE", ceCount);
+            DrawCompactStatCell("FATE", fateCount);
+            DrawCompactStatCell("魔法罐", areaTotals.MagicPotCount);
+            ImGui.EndTable();
+        }
+
+        DrawStatisticsArea(north ? "北岛收益" : "南岛收益", areaTotals, north);
+
+        if (!showCumulativeStatistics)
+        {
+            UiTheme.SectionTitle("最近收益");
+            var recentEntries = statisticsService.RecentEntries
+                .Where(entry => entry.TerritoryId == tracker.TerritoryId).Take(20).ToArray();
+            if (recentEntries.Length == 0)
+                ImGui.TextDisabled("本次尚未记录到事件结算或资源增加。");
+            foreach (var entry in recentEntries)
+            {
+                ImGui.TextDisabled($"{entry.At:HH:mm:ss}");
+                ImGui.SameLine();
+                ImGui.TextWrapped(entry.Text);
+            }
+            if (ImGui.Button("重置本次统计", new Vector2(-1f, 0f))) statisticsService.ResetSession();
+        }
+        else if (!confirmCumulativeReset)
+        {
+            if (ImGui.Button("清空累计统计", new Vector2(-1f, 0f))) confirmCumulativeReset = true;
+        }
+        else
+        {
+            ImGui.TextColored(UiTheme.Error, "确定清空全部累计统计？");
+            if (ImGui.Button("确认清空"))
+            {
+                statisticsService.ResetCumulative();
+                confirmCumulativeReset = false;
+            }
+            ImGui.SameLine();
+            if (ImGui.Button("取消")) confirmCumulativeReset = false;
+        }
+        ImGui.EndChild();
+    }
+
+    private void DrawStatisticsArea(string label, OccultStatisticsArea area, bool north)
+    {
+        UiTheme.SectionTitle(label);
+        if (ImGui.BeginTable("###CrescentCompass-StatisticsExperience", 2,
+                ImGuiTableFlags.SizingStretchSame | ImGuiTableFlags.NoSavedSettings))
+        {
+            DrawCompactStatCell("知见", area.KnowledgeExperience);
+            DrawCompactStatCell("辅助经验", area.SupportJobExperience);
+            ImGui.EndTable();
+        }
+        var currencyCurrent = north ? statisticsService.CurrentNorthCurrency : statisticsService.CurrentSouthCurrency;
+        ImGui.TextColored(UiTheme.Gold, north ? "朔月矿石" : "新月矿石");
+        ImGui.SameLine();
+        ImGui.TextUnformatted($"+{area.SpecialCurrency:N0} / {currencyCurrent:N0}");
+        ImGui.TextDisabled("晶体 · 获得 / 持有");
+        if (!ImGui.BeginTable("###CrescentCompass-StatisticsResources", 3,
+                ImGuiTableFlags.SizingStretchSame | ImGuiTableFlags.NoSavedSettings))
+            return;
+        if (north)
+        {
+            DrawResourceCell("[α]", area.AlphaDispeller,
+                statisticsService.CurrentAlphaDispeller, PhantomDispellerUi.Color(PhantomDispellerKind.Alpha));
+            DrawResourceCell("[β]", area.BetaDispeller,
+                statisticsService.CurrentBetaDispeller, PhantomDispellerUi.Color(PhantomDispellerKind.Beta));
+            DrawResourceCell("[γ]", area.GammaDispeller,
+                statisticsService.CurrentGammaDispeller, PhantomDispellerUi.Color(PhantomDispellerKind.Gamma));
+            ImGui.EndTable();
+            return;
+        }
+        DrawResourceCell("[青]", area.AzureDemiatma, statisticsService.CurrentAzureDemiatma,
+            RewardTagColor("[青]"));
+        DrawResourceCell("[碧]", area.VerdigrisDemiatma, statisticsService.CurrentVerdigrisDemiatma,
+            RewardTagColor("[碧]"));
+        DrawResourceCell("[绿]", area.MalachiteDemiatma, statisticsService.CurrentMalachiteDemiatma,
+            RewardTagColor("[绿]"));
+        DrawResourceCell("[橙]", area.RealgarDemiatma, statisticsService.CurrentRealgarDemiatma,
+            RewardTagColor("[橙]"));
+        DrawResourceCell("[紫]", area.PurpleDemiatma, statisticsService.CurrentPurpleDemiatma,
+            RewardTagColor("[紫]"));
+        DrawResourceCell("[黄]", area.YellowDemiatma, statisticsService.CurrentYellowDemiatma,
+            RewardTagColor("[黄]"));
+        ImGui.EndTable();
+    }
+
+    private static void DrawCompactStatCell(string label, long value)
+    {
+        ImGui.TableNextColumn();
+        ImGui.TextDisabled(label);
+        ImGui.SameLine();
+        ImGui.TextUnformatted(value.ToString("N0"));
+    }
+
+    private static void DrawResourceCell(string label, long gained, int current, Vector4 color)
+    {
+        ImGui.TableNextColumn();
+        ImGui.TextColored(color, label);
+        ImGui.SameLine();
+        ImGui.TextUnformatted($"+{gained:N0}/{current:N0}");
+    }
+
+    private static string FormatElapsed(TimeSpan elapsed) => elapsed.TotalHours >= 1
+        ? $"{(int)elapsed.TotalHours}小时{elapsed.Minutes:D2}分"
+        : $"{Math.Max(0, elapsed.Minutes)}分{elapsed.Seconds:D2}秒";
 
     private static string EventKindName(OccultEventKind kind) => kind switch
     {

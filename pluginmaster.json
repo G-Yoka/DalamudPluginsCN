@@ -3,19 +3,19 @@
     "Author": "G-Yoka",
     "Name": "新月罗盘",
     "InternalName": "CrescentCompass",
-    "AssemblyVersion": "0.2.0.0",
+    "AssemblyVersion": "0.2.1.0",
     "Punchline": "新月岛寻宝、事件关注与地图导航助手。",
     "Description": "独立的新月岛助手。提供宝箱与魔法罐寻宝、FATE/CE 关注提醒、自动事件与战斗接管（测试）、内置与用户路线、怪物警戒及地图导航。",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
     "RepoUrl": "https://github.com/G-Yoka/DalamudPluginsCN",
     "IconUrl": "https://raw.githubusercontent.com/G-Yoka/DalamudPluginsCN/main/plugins/CrescentCompass/images/icon.png",
-    "DownloadLinkInstall": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/CrescentCompass-v0.2.0/CrescentCompass.zip",
-    "DownloadLinkUpdate": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/CrescentCompass-v0.2.0/CrescentCompass.zip",
-    "TestingAssemblyVersion": "0.2.0.5",
+    "DownloadLinkInstall": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/CrescentCompass-v0.2.1.0/CrescentCompass.zip",
+    "DownloadLinkUpdate": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/CrescentCompass-v0.2.1.0/CrescentCompass.zip",
+    "TestingAssemblyVersion": "0.2.1.0",
     "TestingDalamudApiLevel": 15,
-    "TestingChangelog": "测试版 0.2.0.5\n修复：魔法罐宝箱实际为 EventObj，旧版仅扫描 Treasure，导致不会下坐骑或发送开启交互。\n改进：通过固定系统消息 ID 与魔法罐宝箱 BaseId 识别目标，排除普通野外宝箱及其候选点校准。\n改进：对宝箱异常高度坐标按水平距离接近，抵达后自动下坐骑并交互。",
-    "DownloadLinkTesting": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/CrescentCompass-v0.2.0.5-testing/CrescentCompass.zip",
+    "TestingChangelog": "正式版 0.2.1.0\n新增：南北岛收益统计，记录本次与累计的事件次数、知见、辅助职业经验、特殊货币、半魂晶、消幻晶及最近收益。\n新增：详情栏页签显示设置、单条路线 JSON 导入导出，以及 BossMod 危险区安全余量和移动决策延迟设置。\n改进：自动流程恢复时接管当前 CE／FATE；BossmodRebornCN 统一负责追击、目标优先级与机制移动；北岛事件按消幻晶需求选择。\n修复：自动接受他人复活、亚凡回后错误暂停、事件结束与返回等待点、北岛跨地图层导航，以及魔法罐宝箱识别、下坐骑、交互和奖励完成判定。",
+    "DownloadLinkTesting": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/CrescentCompass-v0.2.1.0/CrescentCompass.zip",
     "IsHide": false,
     "IsTestingExclusive": false,
     "AcceptsFeedback": true,
@@ -26,7 +26,7 @@
       "CE",
       "导航"
     ],
-    "LastUpdate": 1790845998,
-    "Changelog": "新增：自动事件与战斗接管（测试）、39 条内置基础路线、用户路线覆盖、路线跳跃回放、随机停止点与完整配置 JSON 导入导出。内置路线用于缺省回退，更推荐用户按自己的移动环境录制路线。\n改进：比较直达／亚返回／水晶传送耗时；事件内选择目标并进入攻击距离后再启动战斗托管；BossmodRebornCN 接管移动后停止 vnavmesh 追击。\n修复：CE 场外目标、友军罐子目标、事件结束后前往中心、魔法罐宝箱交互与校准、录制路线调用、北岛水晶传送及多项导航卡顿问题。"
+    "LastUpdate": 1790868977,
+    "Changelog": "正式版 0.2.1.0\n新增：南北岛收益统计，记录本次与累计的事件次数、知见、辅助职业经验、特殊货币、半魂晶、消幻晶及最近收益。\n新增：详情栏页签显示设置、单条路线 JSON 导入导出，以及 BossMod 危险区安全余量和移动决策延迟设置。\n改进：自动流程恢复时接管当前 CE／FATE；BossmodRebornCN 统一负责追击、目标优先级与机制移动；北岛事件按消幻晶需求选择。\n修复：自动接受他人复活、亚凡回后错误暂停、事件结束与返回等待点、北岛跨地图层导航，以及魔法罐宝箱识别、下坐骑、交互和奖励完成判定。"
   }
 ]

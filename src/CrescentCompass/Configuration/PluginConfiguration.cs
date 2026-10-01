@@ -6,7 +6,7 @@ namespace CrescentCompass.Configuration;
 [Serializable]
 public sealed class PluginConfiguration : IPluginConfiguration
 {
-    public const int CurrentVersion = 17;
+    public const int CurrentVersion = 19;
     public int Version { get; set; } = CurrentVersion;
     public bool ShowMainWindow { get; set; } = true;
     public bool ShowOverlay { get; set; } = true;
@@ -48,6 +48,12 @@ public sealed class PluginConfiguration : IPluginConfiguration
     public bool ComfortableUiDensity { get; set; }
     public bool ReduceMotion { get; set; }
     public bool MapDetailsExpanded { get; set; }
+    public bool ShowMapDetailsEvents { get; set; } = true;
+    public bool ShowMapDetailsAutomation { get; set; } = true;
+    public bool ShowMapDetailsChests { get; set; } = true;
+    public bool ShowMapDetailsTreasure { get; set; }
+    public bool ShowMapDetailsRoutes { get; set; }
+    public bool ShowMapDetailsStatistics { get; set; } = true;
     public bool ShowMapRouteLayer { get; set; }
     public float MapTextureOpacity { get; set; } = 1f;
     public float MapMarkerOpacity { get; set; } = 1f;
@@ -101,6 +107,7 @@ public sealed class PluginConfiguration : IPluginConfiguration
     public List<ConfirmedFieldTreasureRecord> ConfirmedFieldTreasures { get; set; } = [];
     public bool AutoCalibratePotCandidates { get; set; } = true;
     public List<PotCandidateCalibrationRecord> PotCandidateCalibrations { get; set; } = [];
+    public OccultStatisticsTotals StatisticsCumulative { get; set; } = new();
     public void Normalize()
     {
         if (Version < 3)
@@ -186,7 +193,25 @@ public sealed class PluginConfiguration : IPluginConfiguration
             BossModMovementDecisionDelay = BossModMovementDecisionDelay.UseBossModSetting;
             Version = 17;
         }
+        if (Version < 18)
+        {
+            ShowMapDetailsEvents = true;
+            ShowMapDetailsAutomation = true;
+            ShowMapDetailsChests = true;
+            ShowMapDetailsTreasure = false;
+            ShowMapDetailsRoutes = false;
+            Version = 18;
+        }
+        if (Version < 19)
+        {
+            ShowMapDetailsStatistics = true;
+            StatisticsCumulative = new();
+            Version = 19;
+        }
         Version = Math.Max(CurrentVersion, Version);
+        if (!ShowMapDetailsEvents && !ShowMapDetailsAutomation && !ShowMapDetailsChests &&
+            !ShowMapDetailsTreasure && !ShowMapDetailsRoutes && !ShowMapDetailsStatistics)
+            ShowMapDetailsEvents = true;
         DirectNavigationDistance = Math.Clamp(DirectNavigationDistance, 0f, 300f);
         MinimumTeleportSavingSeconds = Math.Clamp(MinimumTeleportSavingSeconds, 0f, 60f);
         AverageDemiReturnSeconds = Math.Clamp(AverageDemiReturnSeconds, 1f, 35f);
@@ -260,6 +285,62 @@ public sealed class PluginConfiguration : IPluginConfiguration
         PotCandidateCalibrations.RemoveAll(item =>
             item.CandidateId == 0 || item.SampleCount <= 0 ||
             !float.IsFinite(item.X) || !float.IsFinite(item.Y) || !float.IsFinite(item.Z));
+        StatisticsCumulative ??= new();
+        StatisticsCumulative.Normalize();
+    }
+}
+
+[Serializable]
+public sealed class OccultStatisticsTotals
+{
+    public OccultStatisticsArea South { get; set; } = new();
+    public OccultStatisticsArea North { get; set; } = new();
+
+    public void Normalize()
+    {
+        South ??= new();
+        North ??= new();
+        South.Normalize();
+        North.Normalize();
+    }
+}
+
+[Serializable]
+public sealed class OccultStatisticsArea
+{
+    public long KnowledgeExperience { get; set; }
+    public long SupportJobExperience { get; set; }
+    public long SpecialCurrency { get; set; }
+    public int FateCount { get; set; }
+    public int CriticalEngagementCount { get; set; }
+    public int MagicPotCount { get; set; }
+    public long AzureDemiatma { get; set; }
+    public long VerdigrisDemiatma { get; set; }
+    public long MalachiteDemiatma { get; set; }
+    public long RealgarDemiatma { get; set; }
+    public long PurpleDemiatma { get; set; }
+    public long YellowDemiatma { get; set; }
+    public long AlphaDispeller { get; set; }
+    public long BetaDispeller { get; set; }
+    public long GammaDispeller { get; set; }
+
+    public void Normalize()
+    {
+        KnowledgeExperience = Math.Max(0, KnowledgeExperience);
+        SupportJobExperience = Math.Max(0, SupportJobExperience);
+        SpecialCurrency = Math.Max(0, SpecialCurrency);
+        FateCount = Math.Max(0, FateCount);
+        CriticalEngagementCount = Math.Max(0, CriticalEngagementCount);
+        MagicPotCount = Math.Max(0, MagicPotCount);
+        AzureDemiatma = Math.Max(0, AzureDemiatma);
+        VerdigrisDemiatma = Math.Max(0, VerdigrisDemiatma);
+        MalachiteDemiatma = Math.Max(0, MalachiteDemiatma);
+        RealgarDemiatma = Math.Max(0, RealgarDemiatma);
+        PurpleDemiatma = Math.Max(0, PurpleDemiatma);
+        YellowDemiatma = Math.Max(0, YellowDemiatma);
+        AlphaDispeller = Math.Max(0, AlphaDispeller);
+        BetaDispeller = Math.Max(0, BetaDispeller);
+        GammaDispeller = Math.Max(0, GammaDispeller);
     }
 }
 

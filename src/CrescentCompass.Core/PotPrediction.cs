@@ -221,6 +221,14 @@ public sealed class PotPredictionSession
         text.Trim().Contains("发现了财宝", StringComparison.Ordinal) &&
         !text.Trim().Contains("已经发现的财宝消失了", StringComparison.Ordinal);
 
+    public static bool IsLocalTreasureRewardMessage(string text, string playerName)
+    {
+        var value = text.Trim();
+        var name = playerName.Trim();
+        return name.Length > 0 && value.Contains(name, StringComparison.Ordinal) &&
+               value.Contains("获得了", StringComparison.Ordinal);
+    }
+
     public static bool IsTerminalMessage(string text)
     {
         var value = text.Trim();

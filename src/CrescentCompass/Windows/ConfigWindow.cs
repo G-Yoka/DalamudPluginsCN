@@ -118,11 +118,48 @@ public sealed class ConfigWindow : Window
             configuration.MapDetailsExpanded = value;
             applyDetailsVisibility();
         });
+        UiTheme.SectionTitle("地图详情栏页签");
+        ImGui.TextDisabled("取消勾选后，对应页签不会显示；至少保留一个页签。");
+        DrawDetailPageVisibility("事件", 0, configuration.ShowMapDetailsEvents);
+        ImGui.SameLine();
+        DrawDetailPageVisibility("自动", 1, configuration.ShowMapDetailsAutomation);
+        ImGui.SameLine();
+        DrawDetailPageVisibility("宝箱", 2, configuration.ShowMapDetailsChests);
+        ImGui.SameLine();
+        DrawDetailPageVisibility("寻宝", 3, configuration.ShowMapDetailsTreasure);
+        ImGui.SameLine();
+        DrawDetailPageVisibility("路线", 4, configuration.ShowMapDetailsRoutes);
+        ImGui.SameLine();
+        DrawDetailPageVisibility("统计", 5, configuration.ShowMapDetailsStatistics);
         DrawBoolean("减少动态效果", configuration.ReduceMotion, value => configuration.ReduceMotion = value);
         SliderPercent("浮窗透明度", configuration.WindowOpacity, value => configuration.WindowOpacity = value, 25, 100);
         SliderPercent("地图底图透明度", configuration.MapTextureOpacity, value => configuration.MapTextureOpacity = value, 25, 100);
         SliderPercent("地图标记透明度", configuration.MapMarkerOpacity, value => configuration.MapMarkerOpacity = value, 25, 100);
         DrawConfigurationTransfer();
+    }
+
+    private void DrawDetailPageVisibility(string label, int page, bool visible)
+    {
+        if (!ImGui.Checkbox($"{label}###CrescentCompass-DetailPage-{page}", ref visible)) return;
+        SetDetailPageVisibility(page, visible);
+        if (!configuration.ShowMapDetailsEvents && !configuration.ShowMapDetailsAutomation &&
+            !configuration.ShowMapDetailsChests && !configuration.ShowMapDetailsTreasure &&
+            !configuration.ShowMapDetailsRoutes && !configuration.ShowMapDetailsStatistics)
+            SetDetailPageVisibility(page, true);
+        save();
+    }
+
+    private void SetDetailPageVisibility(int page, bool visible)
+    {
+        switch (page)
+        {
+            case 0: configuration.ShowMapDetailsEvents = visible; break;
+            case 1: configuration.ShowMapDetailsAutomation = visible; break;
+            case 2: configuration.ShowMapDetailsChests = visible; break;
+            case 3: configuration.ShowMapDetailsTreasure = visible; break;
+            case 4: configuration.ShowMapDetailsRoutes = visible; break;
+            case 5: configuration.ShowMapDetailsStatistics = visible; break;
+        }
     }
 
     private void DrawConfigurationTransfer()

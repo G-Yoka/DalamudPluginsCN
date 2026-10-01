@@ -102,6 +102,7 @@ public sealed unsafe class EventAutomationService : IDisposable
     private bool treasureCandidatesExhausted;
     private string treasureActionFailure = string.Empty;
     private bool treasureInteractionIssued;
+    private bool treasureRewardReceived;
     private long treasureInteractionStartedAt;
     private bool awaitingSpawnedMagicPotTreasure;
     private bool navigationIssued;
@@ -146,6 +147,7 @@ public sealed unsafe class EventAutomationService : IDisposable
         this.dataManager = dataManager;
         this.save = save;
         this.log = log;
+        treasureTracker.MagicPotTreasureRewardReceived += OnMagicPotTreasureRewardReceived;
         framework.Update += OnFrameworkUpdate;
     }
 
@@ -226,6 +228,7 @@ public sealed unsafe class EventAutomationService : IDisposable
     {
         if (disposed) return;
         disposed = true;
+        treasureTracker.MagicPotTreasureRewardReceived -= OnMagicPotTreasureRewardReceived;
         framework.Update -= OnFrameworkUpdate;
         Reset(EventAutomationStage.Disabled, "自动事件已卸载", true);
     }
@@ -1124,6 +1127,7 @@ public sealed unsafe class EventAutomationService : IDisposable
         activeTreasure = null;
         treasureInteractionIssued = false;
         treasureInteractionStartedAt = 0;
+        treasureRewardReceived = false;
         treasureGuidanceLostAt = 0;
         awaitingSpawnedMagicPotTreasure = true;
         ResetTreasureCandidateFailures();
@@ -1134,6 +1138,19 @@ public sealed unsafe class EventAutomationService : IDisposable
 
     private void UpdateTreasureHunt(Vector3 playerPosition, long now, bool hasGuidance)
     {
+        if (treasureRewardReceived)
+        {
+            treasureRewardReceived = false;
+            if (activeTreasure is { } openedTreasure)
+                CompleteConfirmedTreasureOpen(openedTreasure);
+            else
+            {
+                awaitingSpawnedMagicPotTreasure = false;
+                BeginSettling("已确认获得魔法罐财宝，恢复自动事件循环");
+            }
+            return;
+        }
+
         RefreshTreasureCandidateFailures();
         if (activeTreasure == null && TryCaptureSpawnedMagicPotTreasure(playerPosition, out var spawnedTreasure))
             activeTreasure = spawnedTreasure;
@@ -1380,6 +1397,7 @@ public sealed unsafe class EventAutomationService : IDisposable
         activeTreasure = null;
         treasureInteractionIssued = false;
         treasureInteractionStartedAt = 0;
+        treasureRewardReceived = false;
         treasureGuidanceLostAt = 0;
         awaitingSpawnedMagicPotTreasure = false;
         BeginSettling("已确认开启魔法罐发现的财宝，恢复自动事件循环");
@@ -1774,6 +1792,7 @@ public sealed unsafe class EventAutomationService : IDisposable
         activeTreasure = null;
         treasureInteractionIssued = false;
         treasureInteractionStartedAt = 0;
+        treasureRewardReceived = false;
         awaitingSpawnedMagicPotTreasure = false;
         treasureGuidanceLostAt = 0;
         ResetTreasureCandidateFailures();
@@ -1785,6 +1804,12 @@ public sealed unsafe class EventAutomationService : IDisposable
         returnStartedAt = 0;
         Stage = stage;
         Status = status;
+    }
+
+    private void OnMagicPotTreasureRewardReceived()
+    {
+        if (Stage == EventAutomationStage.TreasureHunting)
+            treasureRewardReceived = true;
     }
 
     private EventAutomationWaitingPoint? CurrentWaitingPoint()

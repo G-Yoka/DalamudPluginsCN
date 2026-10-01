@@ -66,6 +66,7 @@ public sealed unsafe class TreasureTracker : IDisposable
 
     public PotPredictionSession Session => session;
     public event Action<bool>? SupportedTerritoryChanged;
+    public event Action? MagicPotTreasureRewardReceived;
     public bool IsSupportedTerritory => clientState.TerritoryType is
         PotCandidateCatalog.NorthHornTerritoryId or PotCandidateCatalog.SouthHornTerritoryId;
     public uint TerritoryId => clientState.TerritoryType;
@@ -263,6 +264,15 @@ public sealed unsafe class TreasureTracker : IDisposable
         if (configuration.Paused || !IsSupportedTerritory || message.LogKind != XivChatType.SystemMessage) return;
         var text = message.OriginalMessage.ToString().Trim();
         if (string.IsNullOrEmpty(text)) return;
+
+        var playerName = objectTable.LocalPlayer?.Name.ToString() ?? string.Empty;
+        if (session.Stage == PotSessionStage.AwaitingTreasure && ConfirmedTreasure != null &&
+            PotPredictionSession.IsLocalTreasureRewardMessage(text, playerName))
+        {
+            Status = "已确认获得魔法罐财宝";
+            MagicPotTreasureRewardReceived?.Invoke();
+            return;
+        }
 
         if (PotPredictionSession.IsSecondTreasureMessage(text))
         {
