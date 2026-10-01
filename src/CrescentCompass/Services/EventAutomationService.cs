@@ -56,7 +56,7 @@ public sealed unsafe class EventAutomationService : IDisposable
     private const long TreasureDisappearConfirmationMilliseconds = 750;
     private const float TreasureCandidateArrivalRadius = 3f;
     private const float TreasureOpenAttemptRadius = 3.5f;
-    private const float TreasureSpawnCaptureRadius = 15f;
+    private const float MagicPotTreasureCaptureRadius = 80f;
     private const float CriticalEngagementWaitingRadius = 12f;
     private const float CriticalEngagementCombatRadius = 30f;
     private const uint MagicElixirEventItemId = 2_003_296;
@@ -103,7 +103,6 @@ public sealed unsafe class EventAutomationService : IDisposable
     private string treasureActionFailure = string.Empty;
     private bool treasureInteractionIssued;
     private long treasureInteractionStartedAt;
-    private readonly HashSet<ulong> treasureObjectsAtHuntStart = [];
     private bool awaitingSpawnedMagicPotTreasure;
     private bool navigationIssued;
     private bool routeRecordingWasActive;
@@ -1126,10 +1125,6 @@ public sealed unsafe class EventAutomationService : IDisposable
         treasureInteractionIssued = false;
         treasureInteractionStartedAt = 0;
         treasureGuidanceLostAt = 0;
-        treasureObjectsAtHuntStart.Clear();
-        foreach (var gameObject in objectTable)
-            if (gameObject != null && gameObject.IsValid() && gameObject.ObjectKind == ObjectKind.Treasure)
-                treasureObjectsAtHuntStart.Add(gameObject.GameObjectId);
         awaitingSpawnedMagicPotTreasure = true;
         ResetTreasureCandidateFailures();
         nextTreasureAction = 0;
@@ -1277,7 +1272,10 @@ public sealed unsafe class EventAutomationService : IDisposable
         var distance = HorizontalDistance(playerPosition, treasure.Position);
         if (distance > TreasureOpenAttemptRadius)
         {
-            if (!EnsureTreasureNavigation(treasure.Position, "魔法罐发现的财宝")) return;
+            var destination = treasure.Position;
+            if (MathF.Abs(destination.Y - playerPosition.Y) > 20f)
+                destination.Y = playerPosition.Y;
+            if (!EnsureTreasureNavigation(destination, "魔法罐发现的财宝", allowLargeHeightCorrection: true)) return;
             Status = $"财宝已经出现，正在接近 · 距离 {distance:F0}m";
             return;
         }
@@ -1291,8 +1289,8 @@ public sealed unsafe class EventAutomationService : IDisposable
             return;
         }
         var gameObject = objectTable.FirstOrDefault(item =>
-            item.GameObjectId == treasure.GameObjectId && item.ObjectKind == ObjectKind.Treasure &&
-            item.Address != nint.Zero);
+            item.GameObjectId == treasure.GameObjectId && item.Address != nint.Zero &&
+            (item.ObjectKind == ObjectKind.Treasure || TreasureTracker.IsMagicPotTreasureObject(item)));
         if (gameObject is null)
         {
             if (treasureInteractionIssued &&
@@ -1314,18 +1312,26 @@ public sealed unsafe class EventAutomationService : IDisposable
 
         var targetSystem = TargetSystem.Instance();
         var nativeObject = (NativeGameObject*)(void*)gameObject.Address;
-        var nativeTreasure = (NativeTreasure*)(void*)gameObject.Address;
-        if (targetSystem == null || nativeObject == null || nativeTreasure == null)
+        if (targetSystem == null || nativeObject == null)
         {
             Status = "无法取得宝箱交互状态";
             return;
         }
 
-        if ((nativeTreasure->Flags &
-             (NativeTreasure.TreasureFlags.Opened | NativeTreasure.TreasureFlags.FadedOut)) != 0)
+        if (gameObject.ObjectKind == ObjectKind.Treasure)
         {
-            CompleteConfirmedTreasureOpen(treasure);
-            return;
+            var nativeTreasure = (NativeTreasure*)(void*)gameObject.Address;
+            if (nativeTreasure == null)
+            {
+                Status = "无法取得宝箱交互状态";
+                return;
+            }
+            if ((nativeTreasure->Flags &
+                 (NativeTreasure.TreasureFlags.Opened | NativeTreasure.TreasureFlags.FadedOut)) != 0)
+            {
+                CompleteConfirmedTreasureOpen(treasure);
+                return;
+            }
         }
 
         if (treasureInteractionIssued)
@@ -1376,39 +1382,29 @@ public sealed unsafe class EventAutomationService : IDisposable
         treasureInteractionStartedAt = 0;
         treasureGuidanceLostAt = 0;
         awaitingSpawnedMagicPotTreasure = false;
-        treasureObjectsAtHuntStart.Clear();
         BeginSettling("已确认开启魔法罐发现的财宝，恢复自动事件循环");
     }
 
     private bool TryCaptureSpawnedMagicPotTreasure(Vector3 playerPosition, out TreasureSnapshot treasure)
     {
         treasure = default;
-        if (!awaitingSpawnedMagicPotTreasure ||
-            treasureTracker.Session.Stage != PotSessionStage.AwaitingTreasure)
-            return false;
+        if (!awaitingSpawnedMagicPotTreasure) return false;
         var focus = treasureTracker.FocusedCandidate?.Position;
         var gameObject = objectTable
-            .Where(item => item != null && item.IsValid() && item.ObjectKind == ObjectKind.Treasure &&
-                           item.Address != nint.Zero && !treasureObjectsAtHuntStart.Contains(item.GameObjectId) &&
-                           !treasureTracker.IsFieldTreasureObject(item))
-            .Where(item => HorizontalDistance(playerPosition, item.Position) <= TreasureSpawnCaptureRadius ||
+            .Where(item => item != null && item.IsValid() && item.Address != nint.Zero &&
+                           TreasureTracker.IsMagicPotTreasureObject(item) && item.IsTargetable)
+            .Where(item => HorizontalDistance(playerPosition, item.Position) <= MagicPotTreasureCaptureRadius ||
                            focus is { } candidate &&
-                           HorizontalDistance(candidate, item.Position) <= TreasureSpawnCaptureRadius)
+                           HorizontalDistance(candidate, item.Position) <= MagicPotTreasureCaptureRadius)
             .OrderBy(item => focus is { } candidate
                 ? HorizontalDistance(candidate, item.Position)
                 : HorizontalDistance(playerPosition, item.Position))
             .FirstOrDefault();
         if (gameObject == null) return false;
-        var nativeTreasure = (NativeTreasure*)(void*)gameObject.Address;
-        if (nativeTreasure == null ||
-            (nativeTreasure->Flags & NativeTreasure.TreasureFlags.Opened) != 0 ||
-            (nativeTreasure->Flags & NativeTreasure.TreasureFlags.FadedOut) != 0 ||
-            !gameObject.IsTargetable)
-            return false;
         treasure = new TreasureSnapshot(gameObject.GameObjectId, gameObject.Position);
         log.Information(
-            "已捕获魔法罐宝箱对象 {GameObjectId}（BaseId={BaseId}, Name={Name}, Position={Position}）",
-            gameObject.GameObjectId, gameObject.BaseId, gameObject.Name, gameObject.Position);
+            "已捕获魔法罐宝箱对象 {GameObjectId}（BaseId={BaseId}, Kind={Kind}, Name={Name}, Position={Position}）",
+            gameObject.GameObjectId, gameObject.BaseId, gameObject.ObjectKind, gameObject.Name, gameObject.Position);
         Status = "已通过新出现的宝箱对象确认魔法罐财宝";
         return true;
     }
@@ -1778,7 +1774,6 @@ public sealed unsafe class EventAutomationService : IDisposable
         activeTreasure = null;
         treasureInteractionIssued = false;
         treasureInteractionStartedAt = 0;
-        treasureObjectsAtHuntStart.Clear();
         awaitingSpawnedMagicPotTreasure = false;
         treasureGuidanceLostAt = 0;
         ResetTreasureCandidateFailures();

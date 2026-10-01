@@ -14,6 +14,8 @@ namespace CrescentCompass.Services;
 public sealed unsafe class TreasureTracker : IDisposable
 {
     private const long TreasureSpawnCaptureWindowMilliseconds = 8_000;
+    private const uint MagicPotCofferRevealLogMessageId = 10_985;
+    private static readonly HashSet<uint> MagicPotTreasureBaseIds = [2_014_741, 2_014_742, 2_014_743];
     private readonly PluginConfiguration configuration;
     private readonly IChatGui chatGui;
     private readonly IClientState clientState;
@@ -56,6 +58,7 @@ public sealed unsafe class TreasureTracker : IDisposable
         this.log = log;
         this.saveConfiguration = saveConfiguration;
         chatGui.ChatMessage += OnChatMessage;
+        chatGui.LogMessage += OnLogMessage;
         clientState.TerritoryChanged += OnTerritoryChanged;
         framework.Update += OnFrameworkUpdate;
         EnterTerritory();
@@ -102,6 +105,9 @@ public sealed unsafe class TreasureTracker : IDisposable
         gameObject.ObjectKind == ObjectKind.Treasure &&
         IsFieldTreasurePosition(gameObject.Position) &&
         ClassifyFieldTreasure(gameObject.BaseId, gameObject.Name.ToString()) != FieldTreasureKind.Unknown;
+
+    public static bool IsMagicPotTreasureObject(IGameObject gameObject) =>
+        MagicPotTreasureBaseIds.Contains(gameObject.BaseId);
 
     public bool IsCandidateCalibrated(uint candidateId) =>
         configuration.PotCandidateCalibrations.Any(item =>
@@ -158,6 +164,7 @@ public sealed unsafe class TreasureTracker : IDisposable
         clientState.TerritoryChanged -= OnTerritoryChanged;
         framework.Update -= OnFrameworkUpdate;
         chatGui.ChatMessage -= OnChatMessage;
+        chatGui.LogMessage -= OnLogMessage;
         session.SetUniverse([]);
         fieldTreasures.Clear();
         fieldTreasurePoints = [];
@@ -288,17 +295,7 @@ public sealed unsafe class TreasureTracker : IDisposable
 
         if (PotPredictionSession.IsTreasureReportedMessage(text))
         {
-            session.MarkTreasureReported();
-            treasureReportPosition = objectTable.LocalPlayer?.Position ?? FocusedCandidate?.Position;
-            treasureConfirmationDeadline = Environment.TickCount64 + 5_000;
-            terminalResetAt = 0;
-            nextTreasureScan = 0;
-            ConfirmedTreasure = null;
-            calibratedTreasureObjectId = 0;
-            calibrationCandidateId = FocusedCandidate?.Id ?? 0;
-            Status = "已收到发现提示，正在关联本轮宝箱";
-            if (configuration.AutoCalibratePotCandidates)
-                CandidateCalibrationStatus = "已收到发现提示，正在捕获宝箱实际位置";
+            MarkTreasureReported("聊天文本");
             return;
         }
 
@@ -327,6 +324,32 @@ public sealed unsafe class TreasureTracker : IDisposable
                 Status = "提示未匹配已知点位；可撤销最近提示";
                 break;
         }
+    }
+
+    private void OnLogMessage(ILogMessage message)
+    {
+        if (configuration.Paused || !IsSupportedTerritory ||
+            message.LogMessageId != MagicPotCofferRevealLogMessageId)
+            return;
+        MarkTreasureReported($"LogMessageId={message.LogMessageId}");
+    }
+
+    private void MarkTreasureReported(string source)
+    {
+        var alreadyAwaiting = session.Stage == PotSessionStage.AwaitingTreasure;
+        session.MarkTreasureReported();
+        treasureReportPosition = objectTable.LocalPlayer?.Position ?? FocusedCandidate?.Position;
+        treasureConfirmationDeadline = Environment.TickCount64 + 5_000;
+        terminalResetAt = 0;
+        nextTreasureScan = 0;
+        ConfirmedTreasure = null;
+        calibratedTreasureObjectId = 0;
+        calibrationCandidateId = FocusedCandidate?.Id ?? calibrationCandidateId;
+        Status = "已收到发现提示，正在关联本轮宝箱";
+        if (configuration.AutoCalibratePotCandidates)
+            CandidateCalibrationStatus = "已收到发现提示，正在捕获宝箱实际位置";
+        if (!alreadyAwaiting)
+            log.Information("已通过 {Source} 识别魔法罐宝箱出现提示。", source);
     }
 
     private void EnsureFocus()
@@ -402,34 +425,24 @@ public sealed unsafe class TreasureTracker : IDisposable
     {
         if (treasureReportPosition is not { } reportPosition) return;
         TreasureSnapshot? nearest = null;
-        var nearestOpened = false;
         var nearestDistance = float.MaxValue;
         foreach (var gameObject in objectTable)
         {
-            if (gameObject == null || !gameObject.IsValid() ||
-                gameObject.ObjectKind != ObjectKind.Treasure || gameObject.Address == nint.Zero)
+            if (gameObject == null || !gameObject.IsValid() || gameObject.Address == nint.Zero)
                 continue;
-            if (IsFieldTreasureObject(gameObject)) continue;
-
-            var treasure = (NativeTreasure*)(void*)gameObject.Address;
-            if (treasure == null) continue;
-            var opened = (treasure->Flags & NativeTreasure.TreasureFlags.Opened) != 0;
-            if ((treasure->Flags & NativeTreasure.TreasureFlags.FadedOut) != 0 && !opened) continue;
-            if (!gameObject.IsTargetable && !opened) continue;
+            var isMagicPotTreasure = IsMagicPotTreasureObject(gameObject);
+            if (!isMagicPotTreasure || !gameObject.IsTargetable) continue;
 
             var distance = HorizontalDistance(reportPosition, gameObject.Position);
             if (distance > 35f || distance >= nearestDistance) continue;
             nearestDistance = distance;
             nearest = new(gameObject.GameObjectId, gameObject.Position);
-            nearestOpened = opened;
         }
 
         var previouslyConfirmed = ConfirmedTreasure != null;
         ConfirmedTreasure = nearest;
         if (nearest != null)
         {
-            if (nearestOpened)
-                RecordOpenedMagicPotTreasure(nearest.Value);
             Status = $"已确认{ActualTreasureLabel}";
         }
         else if (previouslyConfirmed)

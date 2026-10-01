@@ -11,10 +11,10 @@
   "IconUrl": "https://raw.githubusercontent.com/G-Yoka/DalamudPluginsCN/main/plugins/CrescentCompass/images/icon.png",
   "DownloadLinkInstall": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/CrescentCompass-v0.2.0/CrescentCompass.zip",
   "DownloadLinkUpdate": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/CrescentCompass-v0.2.0/CrescentCompass.zip",
-  "TestingAssemblyVersion": "0.2.0.4",
+  "TestingAssemblyVersion": "0.2.0.5",
   "TestingDalamudApiLevel": 15,
-  "TestingChangelog": "测试版 0.2.0.4\n修复：BossMod 配置接口无法写入 System.Double，导致移动决策延迟设置失败并暂停自动事件。现在改用 BossMod 原生命令应用和恢复该设置。\n改进：移动决策延迟临时设置失败时继续启动战斗接管，并保留 BossMod 当前值。",
-  "DownloadLinkTesting": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/CrescentCompass-v0.2.0.4-testing/CrescentCompass.zip",
+  "TestingChangelog": "测试版 0.2.0.5\n修复：魔法罐宝箱实际为 EventObj，旧版仅扫描 Treasure，导致不会下坐骑或发送开启交互。\n改进：通过固定系统消息 ID 与魔法罐宝箱 BaseId 识别目标，排除普通野外宝箱及其候选点校准。\n改进：对宝箱异常高度坐标按水平距离接近，抵达后自动下坐骑并交互。",
+  "DownloadLinkTesting": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/CrescentCompass-v0.2.0.5-testing/CrescentCompass.zip",
   "IsHide": false,
   "IsTestingExclusive": false,
   "AcceptsFeedback": true,
@@ -25,6 +25,6 @@
     "CE",
     "导航"
   ],
-  "LastUpdate": 1790844797,
+  "LastUpdate": 1790845998,
   "Changelog": "新增：自动事件与战斗接管（测试）、39 条内置基础路线、用户路线覆盖、路线跳跃回放、随机停止点与完整配置 JSON 导入导出。内置路线用于缺省回退，更推荐用户按自己的移动环境录制路线。\n改进：比较直达／亚返回／水晶传送耗时；事件内选择目标并进入攻击距离后再启动战斗托管；BossmodRebornCN 接管移动后停止 vnavmesh 追击。\n修复：CE 场外目标、友军罐子目标、事件结束后前往中心、魔法罐宝箱交互与校准、录制路线调用、北岛水晶传送及多项导航卡顿问题。"
 }
