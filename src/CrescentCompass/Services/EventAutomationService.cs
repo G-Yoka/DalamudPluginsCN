@@ -13,6 +13,7 @@ using FFXIVClientStructs.FFXIV.Client.Game.Control;
 using FFXIVClientStructs.FFXIV.Client.Game.Fate;
 using FFXIVClientStructs.FFXIV.Client.Game.InstanceContent;
 using FFXIVClientStructs.FFXIV.Client.Game.UI;
+using FFXIVClientStructs.FFXIV.Client.UI;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using NativeGameObject = FFXIVClientStructs.FFXIV.Client.Game.Object.GameObject;
@@ -52,7 +53,10 @@ public sealed unsafe class EventAutomationService : IDisposable
     private const long TreasureProbeConfirmationMilliseconds = 5_000;
     private const long TreasureDiscoveryGraceMilliseconds = 10_000;
     private const long TreasureInteractionConfirmationMilliseconds = 8_000;
-    private const float TreasureArrivalRadius = 3f;
+    private const long TreasureDisappearConfirmationMilliseconds = 750;
+    private const float TreasureCandidateArrivalRadius = 3f;
+    private const float TreasureOpenAttemptRadius = 3.5f;
+    private const float TreasureSpawnCaptureRadius = 15f;
     private const float CriticalEngagementWaitingRadius = 12f;
     private const float CriticalEngagementCombatRadius = 30f;
     private const uint MagicElixirEventItemId = 2_003_296;
@@ -639,6 +643,8 @@ public sealed unsafe class EventAutomationService : IDisposable
                 configuration.CombatRotationProvider,
                 configuration.BossModAutomationPreset,
                 false,
+                configuration.BossModDangerZoneMargin,
+                configuration.BossModMovementDecisionDelay,
                 out var error))
         {
             Suspend(error);
@@ -684,6 +690,8 @@ public sealed unsafe class EventAutomationService : IDisposable
                 configuration.CombatRotationProvider,
                 configuration.BossModAutomationPreset,
                 true,
+                configuration.BossModDangerZoneMargin,
+                configuration.BossModMovementDecisionDelay,
                 out var error))
         {
             Suspend(error);
@@ -1200,7 +1208,15 @@ public sealed unsafe class EventAutomationService : IDisposable
         {
             if (treasureTracker.Session.Stage == PotSessionStage.AwaitingTreasure)
             {
-                Status = "已发现财宝，正在等待宝箱出现";
+                navigationService.Cancel(null);
+                navigationIssued = false;
+                if (condition[ConditionFlag.Mounted] || condition[ConditionFlag.Mounting])
+                {
+                    navigationService.RequestDismount();
+                    Status = "已发现财宝，正在下坐骑并等待宝箱出现";
+                }
+                else
+                    Status = "已发现财宝，正在等待宝箱出现";
                 return;
             }
             if (pendingTreasureProbeCandidateId == candidate.Id && now < pendingTreasureProbeDeadline)
@@ -1229,7 +1245,7 @@ public sealed unsafe class EventAutomationService : IDisposable
             ? HorizontalDistance(playerPosition, navigationService.ResolvedDestination)
             : float.MaxValue;
         var distance = Math.Min(originalDistance, resolvedDistance);
-        if (distance > TreasureArrivalRadius)
+        if (distance > TreasureCandidateArrivalRadius)
         {
             if (!EnsureTreasureNavigation(candidate.Position,
                     $"魔法罐财宝候选 #{treasureTracker.GetCandidateNumber(candidate):D2}",
@@ -1259,7 +1275,7 @@ public sealed unsafe class EventAutomationService : IDisposable
     private void UpdateConfirmedTreasure(Vector3 playerPosition, TreasureSnapshot treasure, long now)
     {
         var distance = HorizontalDistance(playerPosition, treasure.Position);
-        if (distance > TreasureArrivalRadius)
+        if (distance > TreasureOpenAttemptRadius)
         {
             if (!EnsureTreasureNavigation(treasure.Position, "魔法罐发现的财宝")) return;
             Status = $"财宝已经出现，正在接近 · 距离 {distance:F0}m";
@@ -1274,19 +1290,18 @@ public sealed unsafe class EventAutomationService : IDisposable
             Status = "已抵达财宝，正在下坐骑";
             return;
         }
-        if (now < nextTreasureAction) return;
-        nextTreasureAction = now + 2_000;
-
         var gameObject = objectTable.FirstOrDefault(item =>
             item.GameObjectId == treasure.GameObjectId && item.ObjectKind == ObjectKind.Treasure &&
             item.Address != nint.Zero);
         if (gameObject is null)
         {
             if (treasureInteractionIssued &&
-                now - treasureInteractionStartedAt < TreasureInteractionConfirmationMilliseconds)
+                now - treasureInteractionStartedAt >= TreasureDisappearConfirmationMilliseconds)
             {
-                Status = "已发送开启请求，正在确认宝箱状态";
+                CompleteConfirmedTreasureOpen(treasure);
             }
+            else if (treasureInteractionIssued)
+                Status = "已发送开启请求，正在确认宝箱状态";
             else
             {
                 treasureInteractionIssued = false;
@@ -1306,71 +1321,82 @@ public sealed unsafe class EventAutomationService : IDisposable
             return;
         }
 
-        if ((nativeTreasure->Flags & NativeTreasure.TreasureFlags.Opened) != 0)
+        if ((nativeTreasure->Flags &
+             (NativeTreasure.TreasureFlags.Opened | NativeTreasure.TreasureFlags.FadedOut)) != 0)
         {
-            var calibrationCandidateId = pendingTreasureProbeCandidateId != 0
-                ? pendingTreasureProbeCandidateId
-                : treasureCandidateId;
-            treasureTracker.RecordOpenedMagicPotTreasure(treasure, calibrationCandidateId);
-            activeTreasure = null;
+            CompleteConfirmedTreasureOpen(treasure);
+            return;
+        }
+
+        if (treasureInteractionIssued)
+        {
+            if (condition[ConditionFlag.Casting])
+            {
+                Status = "正在开启魔法罐发现的财宝";
+                return;
+            }
+
+            if (now - treasureInteractionStartedAt < TreasureInteractionConfirmationMilliseconds)
+            {
+                Status = "已发送开启请求，正在等待宝箱确认";
+                return;
+            }
+
             treasureInteractionIssued = false;
             treasureInteractionStartedAt = 0;
-            treasureGuidanceLostAt = 0;
-            awaitingSpawnedMagicPotTreasure = false;
-            treasureObjectsAtHuntStart.Clear();
-            BeginSettling("已确认开启魔法罐发现的财宝，恢复自动事件循环");
-            return;
         }
 
         if (!gameObject.IsTargetable)
         {
-            if (treasureInteractionIssued &&
-                now - treasureInteractionStartedAt >= TreasureInteractionConfirmationMilliseconds)
-            {
-                treasureInteractionIssued = false;
-                treasureInteractionStartedAt = 0;
-                activeTreasure = null;
-                Status = "宝箱未返回开启确认，正在重新查找宝箱对象";
-            }
-            else
-            {
-                Status = treasureInteractionIssued
-                    ? "已发送开启请求，正在等待宝箱确认"
-                    : "已抵达财宝位置，正在等待宝箱对象可交互";
-            }
+            Status = "已抵达财宝位置，正在等待宝箱对象可交互";
             return;
         }
 
+        if (now < nextTreasureAction) return;
+        nextTreasureAction = now + 2_000;
+
         targetManager.Target = gameObject;
         targetSystem->Target = nativeObject;
-        var interacted = targetSystem->InteractWithObject(nativeObject, false) != 0;
-        if (interacted)
-        {
-            targetSystem->OpenObjectInteraction(nativeObject);
-            treasureInteractionIssued = true;
-            treasureInteractionStartedAt = now;
-            Status = "已发送宝箱开启请求，正在确认结果";
-        }
-        else
-        {
-            treasureInteractionIssued = false;
-            treasureInteractionStartedAt = 0;
-            Status = "客户端未接受宝箱开启请求，正在重试";
-        }
+        targetSystem->InteractWithObject(nativeObject, false);
+        treasureInteractionIssued = true;
+        treasureInteractionStartedAt = now;
+        Status = "已发送宝箱开启请求，正在确认结果";
+        log.Debug("已向魔法罐宝箱 {GameObjectId} 发送交互请求，距离 {Distance:F1}m",
+            treasure.GameObjectId, distance);
+    }
+
+    private void CompleteConfirmedTreasureOpen(TreasureSnapshot treasure)
+    {
+        var calibrationCandidateId = pendingTreasureProbeCandidateId != 0
+            ? pendingTreasureProbeCandidateId
+            : treasureCandidateId;
+        treasureTracker.RecordOpenedMagicPotTreasure(treasure, calibrationCandidateId);
+        activeTreasure = null;
+        treasureInteractionIssued = false;
+        treasureInteractionStartedAt = 0;
+        treasureGuidanceLostAt = 0;
+        awaitingSpawnedMagicPotTreasure = false;
+        treasureObjectsAtHuntStart.Clear();
+        BeginSettling("已确认开启魔法罐发现的财宝，恢复自动事件循环");
     }
 
     private bool TryCaptureSpawnedMagicPotTreasure(Vector3 playerPosition, out TreasureSnapshot treasure)
     {
         treasure = default;
-        if (!awaitingSpawnedMagicPotTreasure) return false;
+        if (!awaitingSpawnedMagicPotTreasure ||
+            treasureTracker.Session.Stage != PotSessionStage.AwaitingTreasure)
+            return false;
         var focus = treasureTracker.FocusedCandidate?.Position;
         var gameObject = objectTable
             .Where(item => item != null && item.IsValid() && item.ObjectKind == ObjectKind.Treasure &&
                            item.Address != nint.Zero && !treasureObjectsAtHuntStart.Contains(item.GameObjectId) &&
                            !treasureTracker.IsFieldTreasureObject(item))
-            .Where(item => HorizontalDistance(playerPosition, item.Position) <= 35f ||
-                           focus is { } candidate && HorizontalDistance(candidate, item.Position) <= 35f)
-            .OrderBy(item => HorizontalDistance(playerPosition, item.Position))
+            .Where(item => HorizontalDistance(playerPosition, item.Position) <= TreasureSpawnCaptureRadius ||
+                           focus is { } candidate &&
+                           HorizontalDistance(candidate, item.Position) <= TreasureSpawnCaptureRadius)
+            .OrderBy(item => focus is { } candidate
+                ? HorizontalDistance(candidate, item.Position)
+                : HorizontalDistance(playerPosition, item.Position))
             .FirstOrDefault();
         if (gameObject == null) return false;
         var nativeTreasure = (NativeTreasure*)(void*)gameObject.Address;
@@ -1380,6 +1406,9 @@ public sealed unsafe class EventAutomationService : IDisposable
             !gameObject.IsTargetable)
             return false;
         treasure = new TreasureSnapshot(gameObject.GameObjectId, gameObject.Position);
+        log.Information(
+            "已捕获魔法罐宝箱对象 {GameObjectId}（BaseId={BaseId}, Name={Name}, Position={Position}）",
+            gameObject.GameObjectId, gameObject.BaseId, gameObject.Name, gameObject.Position);
         Status = "已通过新出现的宝箱对象确认魔法罐财宝";
         return true;
     }
@@ -1617,11 +1646,33 @@ public sealed unsafe class EventAutomationService : IDisposable
     private bool TryAcceptPlayerRaise()
     {
         var revive = AgentRevive.Instance();
-        if (revive == null || !revive->IsAgentActive() || revive->State != ReviveState.Revivable ||
-            revive->ResurrectingPlayerId == 0)
+        if (revive == null || revive->State != ReviveState.Revivable)
             return false;
+
+        var hasRaiseSource = revive->ResurrectingPlayerId != 0 ||
+                             revive->ResurrectionTimeLeft > 0 ||
+                             !string.IsNullOrWhiteSpace(revive->ResurrectingPlayerName.ToString());
+        if (!hasRaiseSource) return false;
+
+        if (revive->IsAddonShown())
+        {
+            var addonId = revive->GetAddonId();
+            var unitManager = RaptureAtkUnitManager.Instance();
+            var reviveAddon = addonId != 0 && unitManager != null
+                ? unitManager->GetAddonById((ushort)addonId)
+                : null;
+            if (reviveAddon != null && reviveAddon->IsVisible)
+                return reviveAddon->FireCallbackInt(0);
+        }
+
         var addon = gameGui.GetAddonByName<AtkUnitBase>("SelectYesno");
-        return addon != null && addon->IsVisible && addon->FireCallbackInt(0);
+        if (addon == null || !addon->IsVisible)
+        {
+            if (!revive->IsAddonShown()) revive->ShowAddon();
+            return false;
+        }
+
+        return addon->FireCallbackInt(0);
     }
 
     private void UpdateReviveRecovery(Vector3 playerPosition, long now)

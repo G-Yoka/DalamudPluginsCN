@@ -3,6 +3,7 @@ using Dalamud.Game.Command;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Ipc;
 using Dalamud.Plugin.Services;
+using System.Globalization;
 
 namespace CrescentCompass.Integrations;
 
@@ -24,6 +25,7 @@ public sealed class CombatAutomationIntegrations
     private readonly ICallGateSubscriber<string> bossModGetAiPreset;
     private readonly ICallGateSubscriber<string, object> bossModSetAiPreset;
     private readonly ICallGateSubscriber<string, bool, bool> bossModCreatePreset;
+    private readonly ICallGateSubscriber<List<string>, bool, List<string>> bossModConfiguration;
     private readonly ICallGateSubscriber<uint, bool> bossModHasModuleByDataId;
     private readonly ICallGateSubscriber<bool> bossModHasActiveModule;
     private readonly ICallGateSubscriber<string> bossModActiveModuleName;
@@ -40,11 +42,15 @@ public sealed class CombatAutomationIntegrations
     private bool bossModPresetChanged;
     private bool bossModTargetingReady;
     private bool bossModFollowConfigured;
+    private bool bossModDangerZoneMarginChanged;
+    private bool bossModMovementDecisionDelayChanged;
     private bool rotationSolverStarted;
     private bool aeAssistRunningStarted;
     private bool aeAssistPullStarted;
     private bool promeStarted;
     private string previousBossModAiPreset = string.Empty;
+    private float previousBossModDangerZoneMargin;
+    private double previousBossModMovementDecisionDelay;
 
     public CombatAutomationIntegrations(
         IDalamudPluginInterface pluginInterface,
@@ -58,6 +64,8 @@ public sealed class CombatAutomationIntegrations
         bossModSetAiPreset = pluginInterface.GetIpcSubscriber<string, object>("BossMod.AI.SetPreset");
         bossModCreatePreset =
             pluginInterface.GetIpcSubscriber<string, bool, bool>("BossMod.Presets.Create");
+        bossModConfiguration =
+            pluginInterface.GetIpcSubscriber<List<string>, bool, List<string>>("BossMod.Configuration");
         bossModHasModuleByDataId = pluginInterface.GetIpcSubscriber<uint, bool>("BossMod.HasModuleByDataId");
         bossModHasActiveModule = pluginInterface.GetIpcSubscriber<bool>("BossMod.HasActiveModule");
         bossModActiveModuleName = pluginInterface.GetIpcSubscriber<string>("BossMod.ActiveModuleName");
@@ -179,6 +187,8 @@ public sealed class CombatAutomationIntegrations
         CombatRotationProvider rotationProvider,
         string bossModPreset,
         bool enableBossModMechanics,
+        BossModDangerZoneMargin dangerZoneMargin,
+        BossModMovementDecisionDelay movementDecisionDelay,
         out string error)
     {
         if (armed)
@@ -221,6 +231,8 @@ public sealed class CombatAutomationIntegrations
                     bossModPresetChanged = true;
                 }
                 ConfigureBossModFollow();
+                ApplyBossModDangerZoneMargin(dangerZoneMargin);
+                ApplyBossModMovementDecisionDelay(movementDecisionDelay);
                 commandManager.ProcessCommand("/bmrai on");
                 bossModStarted = true;
                 bossModTargetingReady = true;
@@ -302,6 +314,63 @@ public sealed class CombatAutomationIntegrations
         bossModFollowConfigured = true;
     }
 
+    private void ApplyBossModDangerZoneMargin(BossModDangerZoneMargin margin)
+    {
+        if (margin == BossModDangerZoneMargin.UseBossModSetting) return;
+        if (!bossModConfiguration.HasFunction)
+            throw new InvalidOperationException("BossmodRebornCN 不支持危险区安全余量配置接口。");
+
+        var current = bossModConfiguration.InvokeFunc(["AIConfig", "PreferredDistance"], false);
+        if (current.Count != 1 || !TryParseBossModFloat(current[0], out previousBossModDangerZoneMargin))
+            throw new InvalidOperationException("无法读取 BossmodRebornCN 当前危险区安全余量。");
+
+        var value = margin switch
+        {
+            BossModDangerZoneMargin.Small => 0.5f,
+            BossModDangerZoneMargin.Medium => 1.5f,
+            BossModDangerZoneMargin.Large => 3f,
+            _ => previousBossModDangerZoneMargin
+        };
+        var result = bossModConfiguration.InvokeFunc(
+            ["AIConfig", "PreferredDistance", value.ToString(CultureInfo.InvariantCulture)], false);
+        if (result.Count != 0)
+            throw new InvalidOperationException($"BossmodRebornCN 拒绝设置危险区安全余量：{string.Join("；", result)}");
+        bossModDangerZoneMarginChanged = true;
+    }
+
+    private static bool TryParseBossModFloat(string value, out float result) =>
+        float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out result) ||
+        float.TryParse(value, NumberStyles.Float, CultureInfo.CurrentCulture, out result);
+
+    private void ApplyBossModMovementDecisionDelay(BossModMovementDecisionDelay delay)
+    {
+        if (delay == BossModMovementDecisionDelay.UseBossModSetting) return;
+        if (!bossModConfiguration.HasFunction)
+            throw new InvalidOperationException("BossmodRebornCN 不支持移动决策延迟配置接口。");
+
+        var current = bossModConfiguration.InvokeFunc(["AIConfig", "MoveDelay"], false);
+        if (current.Count != 1 || !TryParseBossModDouble(current[0], out previousBossModMovementDecisionDelay))
+            throw new InvalidOperationException("无法读取 BossmodRebornCN 当前移动决策延迟。");
+
+        var value = delay switch
+        {
+            BossModMovementDecisionDelay.Immediate => 0d,
+            BossModMovementDecisionDelay.Short => 0.1d,
+            BossModMovementDecisionDelay.Medium => 0.25d,
+            BossModMovementDecisionDelay.Long => 0.5d,
+            _ => previousBossModMovementDecisionDelay
+        };
+        var result = bossModConfiguration.InvokeFunc(
+            ["AIConfig", "MoveDelay", value.ToString(CultureInfo.InvariantCulture)], false);
+        if (result.Count != 0)
+            throw new InvalidOperationException($"BossmodRebornCN 拒绝设置移动决策延迟：{string.Join("；", result)}");
+        bossModMovementDecisionDelayChanged = true;
+    }
+
+    private static bool TryParseBossModDouble(string value, out double result) =>
+        double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out result) ||
+        double.TryParse(value, NumberStyles.Float, CultureInfo.CurrentCulture, out result);
+
     public void Disarm()
     {
         Exception? restoreFailure = null;
@@ -340,6 +409,24 @@ public sealed class CombatAutomationIntegrations
             Restore("Rotation Solver Reborn", () => commandManager.ProcessCommand("/rotation Off"));
         if (bossModStarted)
             Restore("BossmodRebornCN AI", () => commandManager.ProcessCommand("/bmrai off"));
+        if (bossModDangerZoneMarginChanged)
+            Restore("BossmodRebornCN danger-zone margin", () =>
+            {
+                var result = bossModConfiguration.InvokeFunc(
+                    ["AIConfig", "PreferredDistance",
+                        previousBossModDangerZoneMargin.ToString(CultureInfo.InvariantCulture)], false);
+                if (result.Count != 0)
+                    throw new InvalidOperationException(string.Join("; ", result));
+            });
+        if (bossModMovementDecisionDelayChanged)
+            Restore("BossmodRebornCN movement decision delay", () =>
+            {
+                var result = bossModConfiguration.InvokeFunc(
+                    ["AIConfig", "MoveDelay",
+                        previousBossModMovementDecisionDelay.ToString(CultureInfo.InvariantCulture)], false);
+                if (result.Count != 0)
+                    throw new InvalidOperationException(string.Join("; ", result));
+            });
         if (bossModPresetChanged)
             Restore("BossmodRebornCN preset", () => bossModSetAiPreset.InvokeAction(previousBossModAiPreset));
 
@@ -356,11 +443,15 @@ public sealed class CombatAutomationIntegrations
         bossModStarted = false;
         bossModPresetChanged = false;
         bossModTargetingReady = false;
+        bossModDangerZoneMarginChanged = false;
+        bossModMovementDecisionDelayChanged = false;
         rotationSolverStarted = false;
         aeAssistRunningStarted = false;
         aeAssistPullStarted = false;
         promeStarted = false;
         previousBossModAiPreset = string.Empty;
+        previousBossModDangerZoneMargin = 0f;
+        previousBossModMovementDecisionDelay = 0d;
     }
 
     private CombatDependencyStatus StatusFor(

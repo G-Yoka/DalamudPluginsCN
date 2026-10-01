@@ -503,6 +503,8 @@ public sealed class ConfigWindow : Window
         ImGui.TextDisabled($"当前职业接敌距离：目标碰撞箱边缘外 {eventAutomationService.CurrentEngagementRange:F0}m");
         DrawMechanicProvider();
         DrawRotationProvider();
+        DrawBossModDangerZoneMargin();
+        DrawBossModMovementDecisionDelay();
         if (configuration.CombatRotationProvider == CombatRotationProvider.BossModReborn)
         {
             var preset = configuration.BossModAutomationPreset;
@@ -560,6 +562,59 @@ public sealed class ConfigWindow : Window
             }
         }
         ImGui.EndCombo();
+    }
+
+    private void DrawBossModDangerZoneMargin()
+    {
+        var usesBossMod = configuration.EventMechanicProvider == EventMechanicProvider.BossModReborn ||
+                          configuration.CombatRotationProvider == CombatRotationProvider.BossModReborn;
+        if (!usesBossMod) ImGui.BeginDisabled();
+
+        var labels = new[] { "使用 BossMod 当前设置", "0.5 米", "1.5 米（推荐）", "3.0 米" };
+        var current = (int)configuration.BossModDangerZoneMargin;
+        ImGui.SetNextItemWidth(300f);
+        if (ImGui.BeginCombo("BossMod 危险区安全余量", labels[current]))
+        {
+            for (var index = 0; index < labels.Length; index++)
+            {
+                if (!ImGui.Selectable(labels[index], current == index)) continue;
+                configuration.BossModDangerZoneMargin = (BossModDangerZoneMargin)index;
+                save();
+            }
+            ImGui.EndCombo();
+        }
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip("BossMod 接管期间临时应用，接管结束后恢复原值。较大余量会更早离开危险区，但狭窄安全区可能增加绕行。");
+
+        if (!usesBossMod) ImGui.EndDisabled();
+    }
+
+    private void DrawBossModMovementDecisionDelay()
+    {
+        var usesBossMod = configuration.EventMechanicProvider == EventMechanicProvider.BossModReborn ||
+                          configuration.CombatRotationProvider == CombatRotationProvider.BossModReborn;
+        if (!usesBossMod) ImGui.BeginDisabled();
+
+        var labels = new[]
+        {
+            "使用 BossMod 当前设置", "0 秒（立即移动）", "0.10 秒", "0.25 秒", "0.50 秒"
+        };
+        var current = (int)configuration.BossModMovementDecisionDelay;
+        ImGui.SetNextItemWidth(300f);
+        if (ImGui.BeginCombo("BossMod 移动决策延迟", labels[current]))
+        {
+            for (var index = 0; index < labels.Length; index++)
+            {
+                if (!ImGui.Selectable(labels[index], current == index)) continue;
+                configuration.BossModMovementDecisionDelay = (BossModMovementDecisionDelay)index;
+                save();
+            }
+            ImGui.EndCombo();
+        }
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip("BossMod 接管期间临时应用，接管结束后恢复原值。延迟可减少移动决策频繁切换；数值过高可能导致机制躲避不及时。");
+
+        if (!usesBossMod) ImGui.EndDisabled();
     }
 
     private void DrawCombatDependencyTable()

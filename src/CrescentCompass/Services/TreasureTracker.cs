@@ -99,7 +99,9 @@ public sealed unsafe class TreasureTracker : IDisposable
     public string CandidateCalibrationStatus { get; private set; } = "尚未捕获宝箱实际位置";
 
     public bool IsFieldTreasureObject(IGameObject gameObject) =>
-        gameObject.ObjectKind == ObjectKind.Treasure && IsFieldTreasurePosition(gameObject.Position);
+        gameObject.ObjectKind == ObjectKind.Treasure &&
+        IsFieldTreasurePosition(gameObject.Position) &&
+        ClassifyFieldTreasure(gameObject.BaseId, gameObject.Name.ToString()) != FieldTreasureKind.Unknown;
 
     public bool IsCandidateCalibrated(uint candidateId) =>
         configuration.PotCandidateCalibrations.Any(item =>

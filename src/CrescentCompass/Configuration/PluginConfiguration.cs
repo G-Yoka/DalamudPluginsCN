@@ -6,7 +6,7 @@ namespace CrescentCompass.Configuration;
 [Serializable]
 public sealed class PluginConfiguration : IPluginConfiguration
 {
-    public const int CurrentVersion = 15;
+    public const int CurrentVersion = 17;
     public int Version { get; set; } = CurrentVersion;
     public bool ShowMainWindow { get; set; } = true;
     public bool ShowOverlay { get; set; } = true;
@@ -92,6 +92,8 @@ public sealed class PluginConfiguration : IPluginConfiguration
     public EventMechanicProvider EventMechanicProvider { get; set; } = EventMechanicProvider.BossModReborn;
     public CombatRotationProvider CombatRotationProvider { get; set; } = CombatRotationProvider.AEAssistV3;
     public string BossModAutomationPreset { get; set; } = string.Empty;
+    public BossModDangerZoneMargin BossModDangerZoneMargin { get; set; } = BossModDangerZoneMargin.Medium;
+    public BossModMovementDecisionDelay BossModMovementDecisionDelay { get; set; } = BossModMovementDecisionDelay.UseBossModSetting;
     public List<EventAutomationWaitingPoint> EventAutomationWaitingPoints { get; set; } = [];
     public List<CustomNavigationRoute> CustomNavigationRoutes { get; set; } = [];
     public bool UseCustomRoutesForAutomation { get; set; } = true;
@@ -174,6 +176,16 @@ public sealed class PluginConfiguration : IPluginConfiguration
             UseCustomRoutesForManualNavigation = true;
             Version = 15;
         }
+        if (Version < 16)
+        {
+            BossModDangerZoneMargin = BossModDangerZoneMargin.Medium;
+            Version = 16;
+        }
+        if (Version < 17)
+        {
+            BossModMovementDecisionDelay = BossModMovementDecisionDelay.UseBossModSetting;
+            Version = 17;
+        }
         Version = Math.Max(CurrentVersion, Version);
         DirectNavigationDistance = Math.Clamp(DirectNavigationDistance, 0f, 300f);
         MinimumTeleportSavingSeconds = Math.Clamp(MinimumTeleportSavingSeconds, 0f, 60f);
@@ -240,6 +252,9 @@ public sealed class PluginConfiguration : IPluginConfiguration
         if (!Enum.IsDefined(EventAutomationPriority)) EventAutomationPriority = EventAutomationPriority.CeFirst;
         if (!Enum.IsDefined(EventMechanicProvider)) EventMechanicProvider = EventMechanicProvider.BossModReborn;
         if (!Enum.IsDefined(CombatRotationProvider)) CombatRotationProvider = CombatRotationProvider.AEAssistV3;
+        if (!Enum.IsDefined(BossModDangerZoneMargin)) BossModDangerZoneMargin = BossModDangerZoneMargin.Medium;
+        if (!Enum.IsDefined(BossModMovementDecisionDelay))
+            BossModMovementDecisionDelay = BossModMovementDecisionDelay.UseBossModSetting;
         ConfirmedFieldTreasures ??= [];
         PotCandidateCalibrations ??= [];
         PotCandidateCalibrations.RemoveAll(item =>
@@ -269,6 +284,23 @@ public enum CombatRotationProvider
     PromeRotation,
     RotationSolverReborn,
     BossModReborn
+}
+
+public enum BossModDangerZoneMargin
+{
+    UseBossModSetting,
+    Small,
+    Medium,
+    Large
+}
+
+public enum BossModMovementDecisionDelay
+{
+    UseBossModSetting,
+    Immediate,
+    Short,
+    Medium,
+    Long
 }
 
 [Serializable]
