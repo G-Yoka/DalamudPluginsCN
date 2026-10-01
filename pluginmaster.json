@@ -12,10 +12,10 @@
     "IconUrl": "https://raw.githubusercontent.com/G-Yoka/DalamudPluginsCN/main/plugins/CrescentCompass/images/icon.png",
     "DownloadLinkInstall": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/CrescentCompass-v0.2.0/CrescentCompass.zip",
     "DownloadLinkUpdate": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/CrescentCompass-v0.2.0/CrescentCompass.zip",
-    "TestingAssemblyVersion": "0.2.0.1",
+    "TestingAssemblyVersion": "0.2.0.2",
     "TestingDalamudApiLevel": 15,
-    "TestingChangelog": "测试版 0.2.0.1\n新增：单条路线 JSON 导入导出；死亡后自动接受他人复活并恢复当前 CE／FATE；预留事件目标优先表。\n改进：暂停或停止后重新启动可接管当前事件；仅在当前事件有对应机制模块时交由 BossmodRebornCN 接管移动和目标优先级；清理与内置路线重复的旧用户路线。\n修复：亚凡回成功抵达营地后自动流程错误暂停。",
-    "DownloadLinkTesting": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/CrescentCompass-v0.2.0.1-testing/CrescentCompass.zip",
+    "TestingChangelog": "测试版 0.2.0.2\n新增：北岛 FATE／CE 显示彩色消幻晶 α／β／γ 标签；自动事件按背包中数量最少的消幻晶类型优先选择目标。\n改进：自动事件与战斗接管（测试）为支持的事件建立 BossmodRebornCN 专用追击预设，由 BossMod 统一负责追击与机制移动；恢复自动流程时可直接接管所在 CE。\n修复：禁止锁定撒娇罐；修复事件结束后重复选择原事件、返回等待点与亚返回受残留移动输入影响、北岛魔法罐候选跨地图层显示及导航到错误楼层的问题。",
+    "DownloadLinkTesting": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/CrescentCompass-v0.2.0.2-testing/CrescentCompass.zip",
     "IsHide": false,
     "IsTestingExclusive": false,
     "AcceptsFeedback": true,
@@ -26,7 +26,7 @@
       "CE",
       "导航"
     ],
-    "LastUpdate": 1790678584,
+    "LastUpdate": 1790839405,
     "Changelog": "新增：自动事件与战斗接管（测试）、39 条内置基础路线、用户路线覆盖、路线跳跃回放、随机停止点与完整配置 JSON 导入导出。内置路线用于缺省回退，更推荐用户按自己的移动环境录制路线。\n改进：比较直达／亚返回／水晶传送耗时；事件内选择目标并进入攻击距离后再启动战斗托管；BossmodRebornCN 接管移动后停止 vnavmesh 追击。\n修复：CE 场外目标、友军罐子目标、事件结束后前往中心、魔法罐宝箱交互与校准、录制路线调用、北岛水晶传送及多项导航卡顿问题。"
   }
 ]

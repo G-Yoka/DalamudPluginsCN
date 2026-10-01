@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using CrescentCompass.Configuration;
 using CrescentCompass.Core;
+using CrescentCompass.Windows;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.ImGuiNotification;
 using Dalamud.Interface.Utility;
@@ -237,13 +238,18 @@ public sealed class WatchedEventNotificationService : IDisposable
             ImGui.SameLine(0f, 5f * ImGuiHelpers.GlobalScale);
             ImGui.TextColored(RewardTagColor(item.RewardTag), item.RewardTag);
         }
-        if (!OccultEventRewardCatalog.TryGetSoulShard(EventTerritory(item), item.DataId, out var soulShard)) return;
-        ImGui.SameLine(0f, 5f * ImGuiHelpers.GlobalScale);
-        ImGui.TextColored(SoulShardTagColor(soulShard.Tag), soulShard.Tag);
-        if (!ImGui.IsItemHovered()) return;
-        ImGui.BeginTooltip();
-        ImGui.TextUnformatted($"灵魂碎晶：{soulShard.JobName}");
-        ImGui.EndTooltip();
+        if (OccultEventRewardCatalog.TryGetSoulShard(EventTerritory(item), item.DataId, out var soulShard))
+        {
+            ImGui.SameLine(0f, 5f * ImGuiHelpers.GlobalScale);
+            ImGui.TextColored(SoulShardTagColor(soulShard.Tag), soulShard.Tag);
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.BeginTooltip();
+                ImGui.TextUnformatted($"灵魂碎晶：{soulShard.JobName}");
+                ImGui.EndTooltip();
+            }
+        }
+        PhantomDispellerUi.DrawTag(EventTerritory(item), item.DataId, 5f * ImGuiHelpers.GlobalScale);
     }
 
     private void DrawBannerLocation(OccultEventSnapshot item)

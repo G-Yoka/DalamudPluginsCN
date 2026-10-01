@@ -101,11 +101,28 @@ public sealed unsafe class TreasureTracker : IDisposable
     public bool IsFieldTreasureObject(IGameObject gameObject) =>
         gameObject.ObjectKind == ObjectKind.Treasure && IsFieldTreasurePosition(gameObject.Position);
 
+    public bool IsCandidateCalibrated(uint candidateId) =>
+        configuration.PotCandidateCalibrations.Any(item =>
+            item.TerritoryId == clientState.TerritoryType && item.CandidateId == candidateId);
+
+    public bool IsCandidateOnCurrentMap(PotCandidate candidate)
+    {
+        var record = configuration.PotCandidateCalibrations.FirstOrDefault(item =>
+            item.TerritoryId == clientState.TerritoryType && item.CandidateId == candidate.Id);
+        if (record == null) return true;
+        var mapId = record.MapId;
+        if (mapId == 0 && record.TerritoryId == PotCandidateCatalog.NorthHornTerritoryId)
+            mapId = record.Y < -70f
+                ? PotCandidateCatalog.NorthHornSubterraneMapId
+                : PotCandidateCatalog.NorthHornSurfaceMapId;
+        return mapId == 0 || mapId == clientState.MapId;
+    }
+
     public string ExportCandidateCalibrations()
     {
         var lines = new List<string>
         {
-            "TerritoryId\tCandidateId\tOriginalX\tOriginalZ\tCalibratedX\tCalibratedY\tCalibratedZ\tOffset\tSamples"
+            "TerritoryId\tCandidateId\tMapId\tOriginalX\tOriginalZ\tCalibratedX\tCalibratedY\tCalibratedZ\tOffset\tSamples"
         };
         lines.AddRange(configuration.PotCandidateCalibrations
             .OrderBy(item => item.TerritoryId)
@@ -118,7 +135,7 @@ public sealed unsafe class TreasureTracker : IDisposable
                 var offset = source.Id == 0
                     ? float.NaN
                     : HorizontalDistance(source.Position, new Vector3(item.X, item.Y, item.Z));
-                return FormattableString.Invariant($"{item.TerritoryId}\t{item.CandidateId}\t{source.Position.X:F4}\t{source.Position.Z:F4}\t{item.X:F4}\t{item.Y:F4}\t{item.Z:F4}\t{offset:F2}\t{item.SampleCount}");
+                return FormattableString.Invariant($"{item.TerritoryId}\t{item.CandidateId}\t{item.MapId}\t{source.Position.X:F4}\t{source.Position.Z:F4}\t{item.X:F4}\t{item.Y:F4}\t{item.Z:F4}\t{offset:F2}\t{item.SampleCount}");
             }));
         return string.Join(Environment.NewLine, lines);
     }
@@ -454,6 +471,7 @@ public sealed unsafe class TreasureTracker : IDisposable
             {
                 TerritoryId = clientState.TerritoryType,
                 CandidateId = candidate.Id,
+                MapId = clientState.MapId,
                 X = treasure.Position.X,
                 Y = treasure.Position.Y,
                 Z = treasure.Position.Z,
@@ -463,6 +481,7 @@ public sealed unsafe class TreasureTracker : IDisposable
         }
         else
         {
+            record.MapId = clientState.MapId;
             record.X = treasure.Position.X;
             record.Y = treasure.Position.Y;
             record.Z = treasure.Position.Z;
@@ -475,7 +494,7 @@ public sealed unsafe class TreasureTracker : IDisposable
             FocusedCandidate = new PotCandidate(candidate.Id, calibratedPosition);
         saveConfiguration();
         CandidateCalibrationStatus =
-            $"已在开箱时覆盖候选 #{GetCandidateNumber(candidate):D2} 的真实坐标 · 原始偏差 {distance:F1} 米";
+            $"已在开箱时覆盖候选 #{GetCandidateNumber(candidate):D2} 的真实坐标与地图层 · 原始偏差 {distance:F1} 米";
         log.Information(
             "Calibrated pot candidate {CandidateId} in territory {Territory}: offset {Offset:F1}m, samples {Samples}.",
             candidate.Id, clientState.TerritoryType, distance, record.SampleCount);

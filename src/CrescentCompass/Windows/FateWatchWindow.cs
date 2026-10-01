@@ -117,6 +117,7 @@ public sealed class FateWatchWindow : Window
                     ImGui.EndTooltip();
                 }
             }
+            PhantomDispellerUi.DrawTag(entry.TerritoryId, entry.Id);
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(active.DataId != 0
                 ? active.StateText

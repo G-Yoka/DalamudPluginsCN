@@ -22,6 +22,7 @@ public sealed unsafe class NavigationService : IDisposable
     private const uint DemiReturnActionId = 41343;
     private const float MountMinimumPathDistance = 40f;
     private const float CrystalCampRadius = 100f;
+    private const float ReturnDirectCrystalRadius = 15f;
     private const float PathOriginReplanDistance = 2.5f;
     private const int MaxPathOriginReplans = 2;
     private const long PathPlanningFallbackMilliseconds = 8_000;
@@ -79,6 +80,7 @@ public sealed unsafe class NavigationService : IDisposable
     private long demiReturnStartedAt;
     private long nextDemiReturnAt;
     private long cancelInputArmedAt;
+    private bool waitForCancelInputRelease;
     private PendingRoutePlan? routePlan;
     private NavigationFollowUp? pendingFollowUp;
     private NavigationFollowUp? arrivalFollowUp;
@@ -589,9 +591,18 @@ public sealed unsafe class NavigationService : IDisposable
             return false;
         }
         var crystals = CrescentAetheryteCatalog.ForTerritory(tracker.TerritoryId);
-        return IsInsideCrystalCamp(player, crystals)
+        var started = crystals.Any(source => HorizontalDistanceSquared(player, source.Position) <=
+                                             ReturnDirectCrystalRadius * ReturnDirectCrystalRadius)
             ? BeginAetheryteTravel(camp, name, null)
             : BeginAetheryteTravel(camp, name, null, completeAfterDemiReturn: true);
+        if (started)
+        {
+            // Combat automation and a held movement key can remain active for a few frames after an
+            // event ends. Do not interpret that residual input as a fresh request to cancel the return.
+            waitForCancelInputRelease = true;
+            cancelInputArmedAt = long.MaxValue;
+        }
+        return started;
     }
 
     private bool BeginAetheryteTravel(CrescentAetheryte target, string name, NavigationFollowUp? followUp,
@@ -673,7 +684,8 @@ public sealed unsafe class NavigationService : IDisposable
         Vector3 target,
         string name,
         bool allowMount = true,
-        bool allowLargeHeightCorrection = false)
+        bool allowLargeHeightCorrection = false,
+        bool preferTargetHeight = false)
     {
         if (active)
         {
@@ -707,7 +719,7 @@ public sealed unsafe class NavigationService : IDisposable
         // floor probe used by their scene markers so navigation cannot silently choose a lower
         // floor at the same X/Z coordinate.
         var reachableTarget = allowLargeHeightCorrection
-            ? ResolveTreasureCandidateFloor(target, player)
+            ? ResolveTreasureCandidateFloor(target, player, preferTargetHeight)
             : vnavmesh.QueryNearestReachable(target, 12f, 80f);
         if (reachableTarget is not { } resolvedTarget)
         {
@@ -747,9 +759,9 @@ public sealed unsafe class NavigationService : IDisposable
         return true;
     }
 
-    private Vector3? ResolveTreasureCandidateFloor(Vector3 target, Vector3 player)
+    private Vector3? ResolveTreasureCandidateFloor(Vector3 target, Vector3 player, bool preferTargetHeight)
     {
-        var probe = new Vector3(target.X, player.Y + 50f, target.Z);
+        var probe = new Vector3(target.X, (preferTargetHeight ? target.Y : player.Y) + 50f, target.Z);
         return vnavmesh.QueryPointOnFloor(probe, 3f) ??
                vnavmesh.QueryNearestReachable(probe, 3f, 30f);
     }
@@ -817,8 +829,22 @@ public sealed unsafe class NavigationService : IDisposable
             recoveryMemory.Clear();
             ResetStuckRecovery();
         }
-        if (IsNavigating && configuration.InterruptNavigationOnMovementInput &&
-            Environment.TickCount64 >= cancelInputArmedAt && IsCancelInputPressed())
+        if (IsNavigating && configuration.InterruptNavigationOnMovementInput && waitForCancelInputRelease)
+        {
+            if (!IsCancelInputPressed())
+            {
+                waitForCancelInputRelease = false;
+                var now = Environment.TickCount64;
+                cancelInputArmedAt = now + 150;
+                if (demiReturnPending && !demiReturnAccepted)
+                {
+                    demiReturnStartedAt = now;
+                    nextDemiReturnAt = 0;
+                }
+            }
+        }
+        else if (IsNavigating && configuration.InterruptNavigationOnMovementInput &&
+                 Environment.TickCount64 >= cancelInputArmedAt && IsCancelInputPressed())
         {
             Cancel("检测到手动移动，自动导航已取消");
             return;
@@ -1742,6 +1768,13 @@ public sealed unsafe class NavigationService : IDisposable
             demiReturnSawTransition |= condition[ConditionFlag.BetweenAreas] || condition[ConditionFlag.BetweenAreas51];
         }
         if (playerPosition is not { } player) return true;
+        if (now >= teleportDeadline)
+        {
+            demiReturnPending = false;
+            teleportDeadline = now + 45_000;
+            Status = "亚返回多次尝试仍未完成，改为自动前往水晶";
+            return StartNavigationToSource(player);
+        }
         if (IsMountedOrMounting())
         {
             TryDismount();
@@ -1750,6 +1783,11 @@ public sealed unsafe class NavigationService : IDisposable
         }
         if (!demiReturnAccepted)
         {
+            if (configuration.InterruptNavigationOnMovementInput && waitForCancelInputRelease)
+            {
+                Status = $"正在等待移动按键释放，随后亚返回至：{pendingAetheryteName}";
+                return true;
+            }
             var actionManager = ActionManager.Instance();
             if (!condition[ConditionFlag.Casting] && actionManager != null && now >= nextDemiReturnAt &&
                 actionManager->GetActionStatus(ActionType.Action, DemiReturnActionId) == 0)
@@ -1765,24 +1803,21 @@ public sealed unsafe class NavigationService : IDisposable
                     return true;
                 }
             }
-            if (now - demiReturnStartedAt < 5_000) return true;
+            if (now - demiReturnStartedAt < 15_000)
+            {
+                Status = $"亚返回暂不可用，正在等待重试：{pendingAetheryteName}";
+                return true;
+            }
             demiReturnPending = false;
-            Status = "亚返回当前不可用，改为自动前往水晶";
+            teleportDeadline = now + 45_000;
+            Status = "亚返回持续不可用，改为自动前往水晶";
             return StartNavigationToSource(player);
         }
         var elapsed = now - demiReturnStartedAt;
-        if (elapsed >= 35_000)
-        {
-            demiReturnPending = false;
-            Status = "亚返回未能及时完成，改为自动前往水晶";
-            return StartNavigationToSource(player);
-        }
         var betweenAreas = condition[ConditionFlag.BetweenAreas] || condition[ConditionFlag.BetweenAreas51];
         if (betweenAreas || elapsed < 4_000 && condition[ConditionFlag.Casting]) return true;
 
         var movedFromOrigin = HorizontalDistanceSquared(player, demiReturnOrigin) >= 3f * 3f;
-        var castCompleted = demiReturnSawCasting && elapsed >= 3_500;
-        var fallbackElapsed = elapsed >= 4_000;
         var arrivedAtCamp = demiReturnSawTransition || movedFromOrigin;
         if (completeAtCampAfterDemiReturn && arrivedAtCamp)
         {
@@ -1792,7 +1827,7 @@ public sealed unsafe class NavigationService : IDisposable
             Status = $"亚返回完成，已返回：{completedName}";
             return true;
         }
-        if (arrivedAtCamp || castCompleted || fallbackElapsed)
+        if (arrivedAtCamp)
         {
             demiReturnPending = false;
             teleportDeadline = now + 45_000;
@@ -1806,7 +1841,18 @@ public sealed unsafe class NavigationService : IDisposable
             Status = $"亚返回完成，正在连接水晶并传送至：{pendingAetheryteName}";
             return StartNavigationToSource(player);
         }
-        Status = $"正在等待亚返回完成，随后传送至：{pendingAetheryteName}";
+        if (elapsed >= 8_000)
+        {
+            demiReturnAccepted = false;
+            demiReturnSawCasting = false;
+            demiReturnSawTransition = false;
+            demiReturnOrigin = player;
+            demiReturnStartedAt = now;
+            nextDemiReturnAt = 0;
+            Status = $"亚返回未完成，正在重新施放：{pendingAetheryteName}";
+            return true;
+        }
+        Status = $"正在等待亚返回完成，随后返回：{pendingAetheryteName}";
         return true;
     }
 
@@ -1952,6 +1998,7 @@ public sealed unsafe class NavigationService : IDisposable
         demiReturnStartedAt = 0;
         nextDemiReturnAt = 0;
         cancelInputArmedAt = 0;
+        waitForCancelInputRelease = false;
         nextAggroPathCheck = 0;
         nextMountRequest = 0;
         nextDismountRequest = 0;

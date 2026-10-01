@@ -159,10 +159,11 @@ public sealed class TreasureMapWindow : Window
         foreach (var (position, index) in PartyMembers())
             DrawPartyMember(draw, WorldToCanvas(position, renderedOrigin, renderedSize), index, alpha);
 
+        var visibleMapCandidates = tracker.VisibleCandidates.Where(tracker.IsCandidateOnCurrentMap).ToArray();
         var mapHovered = ImGui.IsItemHovered();
         var pointer = ImGui.GetMousePos();
         var hoveredCandidateId = mapHovered
-            ? tracker.VisibleCandidates
+            ? visibleMapCandidates
                 .Select(candidate => (candidate.Id, Distance: Vector2.DistanceSquared(
                     WorldToCanvas(candidate.Position, renderedOrigin, renderedSize), pointer),
                     Radius: (tracker.FocusedCandidate?.Id == candidate.Id
@@ -173,7 +174,7 @@ public sealed class TreasureMapWindow : Window
                 .Select(item => item.Id)
                 .FirstOrDefault()
             : 0u;
-        foreach (var candidate in tracker.VisibleCandidates)
+        foreach (var candidate in visibleMapCandidates)
         {
             var point = WorldToCanvas(candidate.Position, renderedOrigin, renderedSize);
             var focused = tracker.FocusedCandidate?.Id == candidate.Id;
@@ -353,6 +354,7 @@ public sealed class TreasureMapWindow : Window
                     ImGui.EndTooltip();
                 }
             }
+            PhantomDispellerUi.DrawTag(clientState.TerritoryType, item.DataId, 4f * ImGuiHelpers.GlobalScale);
             ImGui.TextDisabled(item.StateText);
             ImGui.PopID();
         }
@@ -710,6 +712,7 @@ public sealed class TreasureMapWindow : Window
         }
 
         var closest = tracker.VisibleCandidates
+            .Where(tracker.IsCandidateOnCurrentMap)
             .Select(candidate => (Candidate: candidate, Distance: Vector2.DistanceSquared(
                 WorldToCanvas(candidate.Position, origin, size), mouse)))
             .Where(item => item.Distance <= MathF.Pow(9f * ImGuiHelpers.GlobalScale *
@@ -795,6 +798,7 @@ public sealed class TreasureMapWindow : Window
             ImGui.SameLine(0f, 4f * ImGuiHelpers.GlobalScale);
             ImGui.TextColored(SoulShardTagColor(soulShard.Tag), soulShard.Tag);
         }
+        PhantomDispellerUi.DrawTag(clientState.TerritoryType, activeEvent.DataId, 4f * ImGuiHelpers.GlobalScale);
         ImGui.TextDisabled(activeEvent.StateText);
         ImGui.EndTooltip();
     }

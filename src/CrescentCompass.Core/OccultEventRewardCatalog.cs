@@ -16,6 +16,41 @@ internal enum DemiatmaColor
 /// </summary>
 public static class OccultEventRewardCatalog
 {
+    private static readonly IReadOnlyDictionary<uint, PhantomDispellerKind> NorthHornPhantomDispellers =
+        new Dictionary<uint, PhantomDispellerKind>
+        {
+            [2074] = PhantomDispellerKind.Alpha,
+            [2077] = PhantomDispellerKind.Alpha,
+            [2081] = PhantomDispellerKind.Alpha,
+            [2082] = PhantomDispellerKind.Alpha,
+            [49] = PhantomDispellerKind.Alpha,
+            [52] = PhantomDispellerKind.Alpha,
+            [55] = PhantomDispellerKind.Alpha,
+            [59] = PhantomDispellerKind.Alpha,
+            [62] = PhantomDispellerKind.Alpha,
+
+            [2073] = PhantomDispellerKind.Beta,
+            [2075] = PhantomDispellerKind.Beta,
+            [2078] = PhantomDispellerKind.Beta,
+            [2080] = PhantomDispellerKind.Beta,
+            [2084] = PhantomDispellerKind.Beta,
+            [51] = PhantomDispellerKind.Beta,
+            [53] = PhantomDispellerKind.Beta,
+            [54] = PhantomDispellerKind.Beta,
+            [57] = PhantomDispellerKind.Beta,
+            [60] = PhantomDispellerKind.Beta,
+
+            [2072] = PhantomDispellerKind.Gamma,
+            [2076] = PhantomDispellerKind.Gamma,
+            [2079] = PhantomDispellerKind.Gamma,
+            [2083] = PhantomDispellerKind.Gamma,
+            [50] = PhantomDispellerKind.Gamma,
+            [56] = PhantomDispellerKind.Gamma,
+            [58] = PhantomDispellerKind.Gamma,
+            [61] = PhantomDispellerKind.Gamma,
+            [63] = PhantomDispellerKind.Gamma
+        };
+
     private static readonly IReadOnlyDictionary<(uint TerritoryId, uint EventId), SoulShardReward> SoulShards =
         new Dictionary<(uint, uint), SoulShardReward>
         {
@@ -73,6 +108,27 @@ public static class OccultEventRewardCatalog
     public static bool TryGetSoulShard(uint territoryId, uint eventId, out SoulShardReward reward) =>
         SoulShards.TryGetValue((territoryId, eventId), out reward);
 
+    public static bool TryGetPhantomDispeller(
+        uint territoryId,
+        uint eventId,
+        out PhantomDispellerKind kind)
+    {
+        if (territoryId == PotCandidateCatalog.NorthHornTerritoryId &&
+            NorthHornPhantomDispellers.TryGetValue(eventId, out kind))
+            return true;
+
+        kind = default;
+        return false;
+    }
+
+    public static string PhantomDispellerTag(PhantomDispellerKind kind) => kind switch
+    {
+        PhantomDispellerKind.Alpha => "[α]",
+        PhantomDispellerKind.Beta => "[β]",
+        PhantomDispellerKind.Gamma => "[γ]",
+        _ => string.Empty
+    };
+
     private static bool TryGet(
         IReadOnlyDictionary<uint, DemiatmaColor> source,
         uint territoryId,
@@ -96,6 +152,14 @@ public static class OccultEventRewardCatalog
         DemiatmaColor.Yellow    => "[黄]",
         _                       => string.Empty
     };
+}
+
+public enum PhantomDispellerKind
+{
+    None,
+    Alpha,
+    Beta,
+    Gamma
 }
 
 public readonly record struct SoulShardReward(string Tag, string JobName);

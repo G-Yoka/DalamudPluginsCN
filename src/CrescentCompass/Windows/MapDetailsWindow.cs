@@ -291,6 +291,7 @@ public sealed class MapDetailsWindow : Window
                     ImGui.EndTooltip();
                 }
             }
+            PhantomDispellerUi.DrawTag(tracker.TerritoryId, item.DataId, 4f * ImGuiHelpers.GlobalScale);
             ImGui.TextDisabled(item.StateText);
             ImGui.PopID();
         }

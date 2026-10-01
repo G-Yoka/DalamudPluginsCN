@@ -11,6 +11,8 @@ public static class PotCandidateCatalog
 {
     public const uint NorthHornTerritoryId = 1346;
     public const uint SouthHornTerritoryId = 1252;
+    public const uint NorthHornSurfaceMapId = 1135;
+    public const uint NorthHornSubterraneMapId = 1244;
     public const int ExpectedInitialCandidateCount = 60;
     public const int ExpectedSecondChanceCandidateCount = 20;
 
@@ -137,4 +139,3 @@ public sealed record PotCandidateCatalogResult(
 {
     public bool IsAvailable => InitialCandidates.Count > 0 && SecondChanceCandidates.Count > 0;
 }
-

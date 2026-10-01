@@ -15,11 +15,15 @@ public readonly record struct CombatDependencyStatus(
 
 public sealed class CombatAutomationIntegrations
 {
+    private const string CrescentBossModPresetName = "CrescentCompass - Target & Mechanics";
+    private const string CrescentBossModPresetJson =
+        "{\"Name\":\"CrescentCompass - Target & Mechanics\",\"Modules\":{\"BossMod.Autorotation.MiscAI.FollowSlot\":[]}}";
     private readonly IDalamudPluginInterface pluginInterface;
     private readonly ICommandManager commandManager;
     private readonly IPluginLog log;
     private readonly ICallGateSubscriber<string> bossModGetAiPreset;
     private readonly ICallGateSubscriber<string, object> bossModSetAiPreset;
+    private readonly ICallGateSubscriber<string, bool, bool> bossModCreatePreset;
     private readonly ICallGateSubscriber<uint, bool> bossModHasModuleByDataId;
     private readonly ICallGateSubscriber<bool> bossModHasActiveModule;
     private readonly ICallGateSubscriber<string> bossModActiveModuleName;
@@ -33,6 +37,9 @@ public sealed class CombatAutomationIntegrations
     private readonly ICallGateSubscriber<bool> rotationSolverActive;
     private bool armed;
     private bool bossModStarted;
+    private bool bossModPresetChanged;
+    private bool bossModTargetingReady;
+    private bool bossModFollowConfigured;
     private bool rotationSolverStarted;
     private bool aeAssistRunningStarted;
     private bool aeAssistPullStarted;
@@ -49,6 +56,8 @@ public sealed class CombatAutomationIntegrations
         this.log = log;
         bossModGetAiPreset = pluginInterface.GetIpcSubscriber<string>("BossMod.AI.GetPreset");
         bossModSetAiPreset = pluginInterface.GetIpcSubscriber<string, object>("BossMod.AI.SetPreset");
+        bossModCreatePreset =
+            pluginInterface.GetIpcSubscriber<string, bool, bool>("BossMod.Presets.Create");
         bossModHasModuleByDataId = pluginInterface.GetIpcSubscriber<uint, bool>("BossMod.HasModuleByDataId");
         bossModHasActiveModule = pluginInterface.GetIpcSubscriber<bool>("BossMod.HasActiveModule");
         bossModActiveModuleName = pluginInterface.GetIpcSubscriber<string>("BossMod.ActiveModuleName");
@@ -74,9 +83,26 @@ public sealed class CombatAutomationIntegrations
         CombatRotationProvider rotationProvider,
         IEnumerable<uint> enemyDataIds)
     {
-        if (!armed || mechanicProvider != EventMechanicProvider.BossModReborn &&
+        if (!armed || !bossModTargetingReady || mechanicProvider != EventMechanicProvider.BossModReborn &&
             rotationProvider != CombatRotationProvider.BossModReborn)
             return false;
+        return HasBossModEncounterModule(enemyDataIds);
+    }
+
+    public bool CanStartBossModEncounterHandoff(
+        EventMechanicProvider mechanicProvider,
+        CombatRotationProvider rotationProvider,
+        IEnumerable<uint> enemyDataIds)
+    {
+        if (mechanicProvider != EventMechanicProvider.BossModReborn &&
+            rotationProvider != CombatRotationProvider.BossModReborn)
+            return false;
+        if (!BossModMechanicsReady()) return false;
+        return HasBossModEncounterModule(enemyDataIds);
+    }
+
+    private bool HasBossModEncounterModule(IEnumerable<uint> enemyDataIds)
+    {
         try
         {
             if (bossModHasActiveModule.HasFunction && bossModHasActiveModule.InvokeFunc()) return true;
@@ -105,8 +131,8 @@ public sealed class CombatAutomationIntegrations
 
     public IReadOnlyList<CombatDependencyStatus> Dependencies =>
     [
-        StatusFor("BossModReborn", "BossmodRebornCN", BossModReady(),
-            BossModReady() ? "机制移动与自身循环可接管" : "需要 BossMod AI IPC"),
+        StatusFor("BossModReborn", "BossmodRebornCN", BossModMechanicsReady(),
+            BossModMechanicsReady() ? "使用 BossMod 默认配置接管目标与机制移动" : "需要 BossMod 模块 IPC"),
         StatusFor("AEAssistV3", "AEAssistV3", AEAssistReady(),
             AEAssistReady() ? "循环运行与主动攻击 IPC 可接管" : "需要 CombatRoutine IPC"),
         StatusFor("PromeRotation", "PromeRotation", PromeReady(),
@@ -121,9 +147,7 @@ public sealed class CombatAutomationIntegrations
         string bossModPreset,
         out string reason)
     {
-        if ((mechanicProvider == EventMechanicProvider.BossModReborn ||
-             rotationProvider == CombatRotationProvider.BossModReborn) &&
-            !BossModReady())
+        if (rotationProvider == CombatRotationProvider.BossModReborn && !BossModReady())
         {
             reason = "BossmodRebornCN 未加载，或 AI IPC 尚未就绪。";
             return false;
@@ -154,6 +178,7 @@ public sealed class CombatAutomationIntegrations
         EventMechanicProvider mechanicProvider,
         CombatRotationProvider rotationProvider,
         string bossModPreset,
+        bool enableBossModMechanics,
         out string error)
     {
         if (armed)
@@ -169,17 +194,36 @@ public sealed class CombatAutomationIntegrations
 
         try
         {
-            var useBossMod = mechanicProvider == EventMechanicProvider.BossModReborn ||
-                             rotationProvider == CombatRotationProvider.BossModReborn;
+            var useBossMod = rotationProvider == CombatRotationProvider.BossModReborn ||
+                             mechanicProvider == EventMechanicProvider.BossModReborn && enableBossModMechanics;
             if (useBossMod)
             {
-                previousBossModAiPreset = bossModGetAiPreset.InvokeFunc() ?? string.Empty;
-                var requestedPreset = rotationProvider == CombatRotationProvider.BossModReborn
-                    ? bossModPreset.Trim()
-                    : string.Empty;
-                bossModSetAiPreset.InvokeAction(requestedPreset);
+                if (rotationProvider == CombatRotationProvider.BossModReborn)
+                {
+                    previousBossModAiPreset = bossModGetAiPreset.InvokeFunc() ?? string.Empty;
+                    bossModSetAiPreset.InvokeAction(bossModPreset.Trim());
+                    var appliedPreset = bossModGetAiPreset.InvokeFunc() ?? string.Empty;
+                    if (!string.Equals(appliedPreset.Trim(), bossModPreset.Trim(), StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidOperationException($"BossmodRebornCN 中未找到 AI 预设“{bossModPreset.Trim()}”。");
+                    bossModPresetChanged = true;
+                }
+                else
+                {
+                    previousBossModAiPreset = bossModGetAiPreset.InvokeFunc() ?? string.Empty;
+                    if (!bossModCreatePreset.HasFunction ||
+                        !bossModCreatePreset.InvokeFunc(CrescentBossModPresetJson, true))
+                        throw new InvalidOperationException("BossmodRebornCN 无法建立新月罗盘追击预设。");
+                    bossModSetAiPreset.InvokeAction(CrescentBossModPresetName);
+                    var appliedPreset = bossModGetAiPreset.InvokeFunc() ?? string.Empty;
+                    if (!string.Equals(appliedPreset, CrescentBossModPresetName,
+                            StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidOperationException("BossmodRebornCN 未能启用新月罗盘追击预设。");
+                    bossModPresetChanged = true;
+                }
+                ConfigureBossModFollow();
                 commandManager.ProcessCommand("/bmrai on");
                 bossModStarted = true;
+                bossModTargetingReady = true;
             }
 
             if (rotationProvider == CombatRotationProvider.RotationSolverReborn)
@@ -224,7 +268,10 @@ public sealed class CombatAutomationIntegrations
             }
 
             armed = true;
-            Status = mechanicProvider == EventMechanicProvider.None &&
+            Status = mechanicProvider == EventMechanicProvider.BossModReborn && !bossModTargetingReady &&
+                     rotationProvider != CombatRotationProvider.BossModReborn
+                ? $"BossMod 当前事件未接管，使用新月罗盘索敌 · {RotationLabel(rotationProvider)} 循环已启动"
+                : mechanicProvider == EventMechanicProvider.None &&
                      rotationProvider == CombatRotationProvider.None
                 ? "未启用战斗插件，继续跟踪事件"
                 : RotationLabel(rotationProvider) == "关闭"
@@ -241,6 +288,18 @@ public sealed class CombatAutomationIntegrations
             Status = error;
             return false;
         }
+    }
+
+    private void ConfigureBossModFollow()
+    {
+        if (bossModFollowConfigured) return;
+        commandManager.ProcessCommand("/bmrai forbidmovement off");
+        commandManager.ProcessCommand("/bmrai followcombat on");
+        commandManager.ProcessCommand("/bmrai followmodule on");
+        commandManager.ProcessCommand("/bmrai followtarget on");
+        commandManager.ProcessCommand("/bmrai followoutofcombat off");
+        commandManager.ProcessCommand("/bmrai idlewhilemounted off");
+        bossModFollowConfigured = true;
     }
 
     public void Disarm()
@@ -280,12 +339,9 @@ public sealed class CombatAutomationIntegrations
         if (rotationSolverStarted)
             Restore("Rotation Solver Reborn", () => commandManager.ProcessCommand("/rotation Off"));
         if (bossModStarted)
-            Restore("BossmodRebornCN", () =>
-            {
-                commandManager.ProcessCommand("/bmrai off");
-                if (bossModSetAiPreset.HasAction)
-                    bossModSetAiPreset.InvokeAction(previousBossModAiPreset);
-            });
+            Restore("BossmodRebornCN AI", () => commandManager.ProcessCommand("/bmrai off"));
+        if (bossModPresetChanged)
+            Restore("BossmodRebornCN preset", () => bossModSetAiPreset.InvokeAction(previousBossModAiPreset));
 
         if (restoreFailure is not null)
         {
@@ -298,6 +354,8 @@ public sealed class CombatAutomationIntegrations
 
         armed = false;
         bossModStarted = false;
+        bossModPresetChanged = false;
+        bossModTargetingReady = false;
         rotationSolverStarted = false;
         aeAssistRunningStarted = false;
         aeAssistPullStarted = false;
@@ -320,9 +378,13 @@ public sealed class CombatAutomationIntegrations
     }
 
     private bool BossModReady() =>
-        PluginLoaded("BossModReborn") &&
+        BossModMechanicsReady() &&
         bossModGetAiPreset.HasFunction &&
         bossModSetAiPreset.HasAction;
+
+    private bool BossModMechanicsReady() =>
+        PluginLoaded("BossModReborn") &&
+        (bossModHasActiveModule.HasFunction || bossModHasModuleByDataId.HasFunction);
 
     private bool AEAssistReady() =>
         PluginLoaded("AEAssistV3") &&

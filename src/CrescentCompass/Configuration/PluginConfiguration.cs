@@ -318,6 +318,7 @@ public sealed class PotCandidateCalibrationRecord
 {
     public uint TerritoryId { get; set; }
     public uint CandidateId { get; set; }
+    public uint MapId { get; set; }
     public float X { get; set; }
     public float Y { get; set; }
     public float Z { get; set; }

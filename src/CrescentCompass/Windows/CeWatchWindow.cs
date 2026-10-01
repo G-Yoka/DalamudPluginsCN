@@ -133,6 +133,7 @@ public sealed class CeWatchWindow : Window
                     ImGui.EndTooltip();
                 }
             }
+            PhantomDispellerUi.DrawTag(entry.TerritoryId, entry.Id);
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(EventStatus(entry, active, territory));
             ImGui.TableNextColumn();

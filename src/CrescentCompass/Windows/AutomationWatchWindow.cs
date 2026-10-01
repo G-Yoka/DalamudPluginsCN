@@ -198,6 +198,7 @@ public sealed class AutomationWatchWindow : Window
             ImGui.TextColored(SoulShardTagColor(soulShard.Tag), soulShard.Tag);
             DrawTagTooltip($"灵魂碎晶：{soulShard.JobName}");
         }
+        PhantomDispellerUi.DrawTag(territoryId, id);
 
         ImGui.TableNextColumn();
         DrawRouteControls(id, territoryId, kind, name);

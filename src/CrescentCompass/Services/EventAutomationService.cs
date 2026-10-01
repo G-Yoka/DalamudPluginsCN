@@ -18,6 +18,7 @@ using FFXIVClientStructs.FFXIV.Component.GUI;
 using NativeGameObject = FFXIVClientStructs.FFXIV.Client.Game.Object.GameObject;
 using NativeTreasure = FFXIVClientStructs.FFXIV.Client.Game.Object.Treasure;
 using EventItemRow = Lumina.Excel.Sheets.EventItem;
+using ItemRow = Lumina.Excel.Sheets.Item;
 using StatusRow = Lumina.Excel.Sheets.Status;
 
 namespace CrescentCompass.Services;
@@ -41,7 +42,9 @@ public enum EventAutomationStage
 
 public sealed unsafe class EventAutomationService : IDisposable
 {
+    private const string CoquettishPotName = "撒娇罐";
     private const long MissingEventGraceMilliseconds = 3_000;
+    private const long CompletedEventIgnoreMilliseconds = 20_000;
     private const long CombatApproachRetryMilliseconds = 1_000;
     private const long MagicPotRewardWaitMilliseconds = 15_000;
     private const long MagicPotForecastWaitMilliseconds = 11 * 60_000;
@@ -81,6 +84,9 @@ public sealed unsafe class EventAutomationService : IDisposable
     private long nextIdentifierResolve;
     private uint guidanceStatusId;
     private uint elixirItemId = MagicElixirEventItemId;
+    private uint alphaDispellerItemId;
+    private uint betaDispellerItemId;
+    private uint gammaDispellerItemId;
     private uint treasureCandidateId;
     private TreasureSnapshot? activeTreasure;
     private readonly HashSet<uint> unreachableTreasureCandidateIds = [];
@@ -102,6 +108,9 @@ public sealed unsafe class EventAutomationService : IDisposable
     private long reviveRecoveredAt;
     private bool reviveAcceptanceIssued;
     private long returnStartedAt;
+    private uint recentlyCompletedEventId;
+    private OccultEventKind recentlyCompletedEventKind;
+    private long recentlyCompletedEventIgnoreUntil;
     private bool disposed;
 
     public EventAutomationService(
@@ -143,8 +152,19 @@ public sealed unsafe class EventAutomationService : IDisposable
     public CombatAutomationIntegrations CombatIntegrations => combatIntegrations;
     public float CurrentEngagementRange => EngagementRangeForJob(
         objectTable.LocalPlayer?.ClassJob.RowId ?? 0);
-    public bool UsesDefaultWaitingPoint => configuration.EventAutomationWaitingPoints.All(item =>
-        item.TerritoryId != clientState.TerritoryType);
+    public bool UsesDefaultWaitingPoint
+    {
+        get
+        {
+            var custom = configuration.EventAutomationWaitingPoints.FirstOrDefault(item =>
+                item.TerritoryId == clientState.TerritoryType);
+            if (custom is null) return true;
+
+            var headquarters = DefaultWaitingAetheryte();
+            return headquarters is { } camp &&
+                   HorizontalDistance(new Vector3(custom.X, custom.Y, custom.Z), camp.Position) <= 15f;
+        }
+    }
 
     public string WaitingPointLabel
     {
@@ -195,7 +215,7 @@ public sealed unsafe class EventAutomationService : IDisposable
     public void Resume()
     {
         if (!configuration.EnableEventAutomation) return;
-        if (TryAdoptCurrentEvent(Environment.TickCount64, "自动事件已恢复")) return;
+        if (TryAdoptCurrentOrNearbyEvent(Environment.TickCount64, "自动事件已恢复")) return;
         Reset(EventAutomationStage.Waiting, "自动事件已恢复，正在等待目标", true);
     }
 
@@ -266,7 +286,7 @@ public sealed unsafe class EventAutomationService : IDisposable
 
         if (Stage == EventAutomationStage.Disabled)
         {
-            if (TryAdoptCurrentEvent(now, "自动事件已启动")) return;
+            if (TryAdoptCurrentOrNearbyEvent(now, "自动事件已启动")) return;
             Stage = EventAutomationStage.Waiting;
             Status = "自动事件已启用，正在等待目标";
         }
@@ -362,6 +382,16 @@ public sealed unsafe class EventAutomationService : IDisposable
 
         target = next;
         targetLastSeenAt = now;
+        if (next.Kind == OccultEventKind.CriticalEngagement &&
+            HorizontalDistance(playerPosition, next.Position) <= CriticalEngagementWaitingRadius)
+        {
+            navigationService.Cancel(null);
+            navigationIssued = false;
+            awaitingStartedAt = now;
+            Stage = EventAutomationStage.AwaitingStart;
+            Status = $"已在 {next.Name} 的等待区域，正在等待开始";
+            return;
+        }
         navigationIssued = navigationService.NavigateToEvent(next.Position, $"自动事件：{next.Name}",
             next.DataId, RouteKind(next.Kind), true);
         if (!navigationIssued)
@@ -595,6 +625,8 @@ public sealed unsafe class EventAutomationService : IDisposable
             return;
         }
 
+        if (TryStartBossModEncounterHandoff(active.Value, playerPosition)) return;
+
         if (active.Value.Kind is OccultEventKind.Fate or OccultEventKind.MagicPot &&
             !PrepareFateEngagement(active.Value, playerPosition, now))
             return;
@@ -606,6 +638,7 @@ public sealed unsafe class EventAutomationService : IDisposable
                 configuration.EventMechanicProvider,
                 configuration.CombatRotationProvider,
                 configuration.BossModAutomationPreset,
+                false,
                 out var error))
         {
             Suspend(error);
@@ -614,6 +647,52 @@ public sealed unsafe class EventAutomationService : IDisposable
 
         Stage = EventAutomationStage.Participating;
         Status = $"正在参与 {active.Value.Name} · {combatIntegrations.Status}";
+    }
+
+    private bool TryStartBossModEncounterHandoff(OccultEventSnapshot active, Vector3 playerPosition)
+    {
+        var enemyDataIds = active.Kind == OccultEventKind.CriticalEngagement
+            ? objectTable.OfType<IBattleNpc>()
+                .Where(item => IsCriticalEngagementEnemy(item, active.Position))
+                .Select(item => item.BaseId)
+            : objectTable.OfType<IBattleNpc>()
+                .Where(item => IsFateEnemy(item, active.DataId))
+                .Select(item => item.BaseId);
+        if (!combatIntegrations.CanStartBossModEncounterHandoff(
+                configuration.EventMechanicProvider,
+                configuration.CombatRotationProvider,
+                enemyDataIds))
+            return false;
+
+        var enemy = active.Kind == OccultEventKind.CriticalEngagement
+            ? AcquireCriticalEngagementTarget(active.DataId, active.Position, playerPosition)
+            : AcquireFateTarget(active.DataId, playerPosition);
+        if (enemy is null) return false;
+
+        targetManager.Target = enemy;
+        if (navigationService.IsNavigating) navigationService.Cancel(null);
+        navigationIssued = false;
+        if (condition[ConditionFlag.Mounted] || condition[ConditionFlag.Mounting])
+        {
+            navigationService.RequestDismount();
+            Status = $"已锁定 {enemy.Name}，正在下坐骑后交由 BossMod 追击";
+            return true;
+        }
+
+        if (!combatIntegrations.Arm(
+                configuration.EventMechanicProvider,
+                configuration.CombatRotationProvider,
+                configuration.BossModAutomationPreset,
+                true,
+                out var error))
+        {
+            Suspend(error);
+            return true;
+        }
+
+        Stage = EventAutomationStage.Participating;
+        Status = $"正在参与 {active.Name} · 已锁定 {enemy.Name}，追击与机制移动交由 {combatIntegrations.BossModModuleLabel()}";
+        return true;
     }
 
     private void UpdateParticipating(Vector3 playerPosition, long now)
@@ -678,9 +757,8 @@ public sealed unsafe class EventAutomationService : IDisposable
                 enemyDataIds))
             return MaintainFateEngagement(active, playerPosition, now);
 
-        if (navigationService.IsNavigating) navigationService.Cancel(null);
-        navigationIssued = false;
-        return $"移动与目标优先级已交由 {combatIntegrations.BossModModuleLabel()} · {active.StateText}";
+        var enemy = AcquireFateTarget(active.DataId, playerPosition);
+        return MaintainBossModTarget(enemy, active.StateText);
     }
 
     private string MaintainOrHandOffCriticalEngagement(
@@ -697,13 +775,41 @@ public sealed unsafe class EventAutomationService : IDisposable
                 enemyDataIds))
             return MaintainCriticalEngagement(active, playerPosition, now);
 
+        var enemy = AcquireCriticalEngagementTarget(active.DataId, active.Position, playerPosition);
+        return MaintainBossModTarget(enemy, active.StateText);
+    }
+
+    private string MaintainBossModTarget(IBattleNpc? enemy, string stateText)
+    {
+        if (enemy is null)
+        {
+            if (navigationService.IsNavigating) navigationService.Cancel(null);
+            navigationIssued = false;
+            return $"{combatIntegrations.BossModModuleLabel()} 已接管，正在等待下一批敌人 · {stateText}";
+        }
+
+        targetManager.Target = enemy;
+        if (condition[ConditionFlag.Mounted] || condition[ConditionFlag.Mounting])
+        {
+            if (navigationService.IsNavigating) navigationService.Cancel(null);
+            navigationIssued = false;
+            navigationService.RequestDismount();
+            return $"{combatIntegrations.BossModModuleLabel()} 已接管，正在下坐骑 · {stateText}";
+        }
+
         if (navigationService.IsNavigating) navigationService.Cancel(null);
         navigationIssued = false;
-        return $"移动与目标优先级已交由 {combatIntegrations.BossModModuleLabel()} · {active.StateText}";
+        return $"已锁定 {enemy.Name}，追击与机制移动已交由 {combatIntegrations.BossModModuleLabel()} · {stateText}";
     }
 
     private void BeginSettling(string status)
     {
+        if (target is { } completed)
+        {
+            recentlyCompletedEventId = completed.DataId;
+            recentlyCompletedEventKind = completed.Kind;
+            recentlyCompletedEventIgnoreUntil = Environment.TickCount64 + CompletedEventIgnoreMilliseconds;
+        }
         navigationService.Cancel(null);
         navigationIssued = false;
         combatIntegrations.Disarm();
@@ -834,10 +940,20 @@ public sealed unsafe class EventAutomationService : IDisposable
 
     private OccultEventSnapshot? SelectTarget(Vector3 playerPosition)
     {
-        var candidates = eventTracker.ActiveEvents.Where(IsSelectable).ToArray();
+        var now = Environment.TickCount64;
+        var candidates = eventTracker.ActiveEvents
+            .Where(IsSelectable)
+            .Where(item => now >= recentlyCompletedEventIgnoreUntil ||
+                           item.DataId != recentlyCompletedEventId ||
+                           !SameAutomationKind(item.Kind, recentlyCompletedEventKind))
+            .ToArray();
         if (candidates.Length == 0) return null;
+        var hasDispellerCounts = TryGetPhantomDispellerCounts(out var alphaCount, out var betaCount, out var gammaCount);
         return candidates
-            .OrderBy(item => PriorityGroup(item.Kind))
+            .OrderBy(item => hasDispellerCounts
+                ? PhantomDispellerCount(item, alphaCount, betaCount, gammaCount)
+                : 0)
+            .ThenBy(item => PriorityGroup(item.Kind))
             .ThenBy(item => HorizontalDistance(playerPosition, item.Position))
             .ThenBy(item => item.Progress)
             .First();
@@ -900,7 +1016,9 @@ public sealed unsafe class EventAutomationService : IDisposable
 
     private void ResolveTreasureIdentifiers()
     {
-        if (guidanceStatusId != 0 && elixirItemId != 0) return;
+        if (guidanceStatusId != 0 && elixirItemId != 0 &&
+            alphaDispellerItemId != 0 && betaDispellerItemId != 0 && gammaDispellerItemId != 0)
+            return;
         var now = Environment.TickCount64;
         if (now < nextIdentifierResolve) return;
         nextIdentifierResolve = now + 5_000;
@@ -931,6 +1049,41 @@ public sealed unsafe class EventAutomationService : IDisposable
                 break;
             }
         }
+
+        if (alphaDispellerItemId == 0 || betaDispellerItemId == 0 || gammaDispellerItemId == 0)
+        {
+            foreach (var row in dataManager.GetExcelSheet<ItemRow>())
+            {
+                var name = row.Name.ToString().Trim();
+                if (!TryClassifyPhantomDispellerName(name, out var kind)) continue;
+                switch (kind)
+                {
+                    case PhantomDispellerKind.Alpha: alphaDispellerItemId = row.RowId; break;
+                    case PhantomDispellerKind.Beta: betaDispellerItemId = row.RowId; break;
+                    case PhantomDispellerKind.Gamma: gammaDispellerItemId = row.RowId; break;
+                }
+            }
+
+            if (alphaDispellerItemId != 0 && betaDispellerItemId != 0 && gammaDispellerItemId != 0)
+                log.Information("Resolved phantom dispeller items: alpha={Alpha}, beta={Beta}, gamma={Gamma}.",
+                    alphaDispellerItemId, betaDispellerItemId, gammaDispellerItemId);
+        }
+    }
+
+    private static bool TryClassifyPhantomDispellerName(string name, out PhantomDispellerKind kind)
+    {
+        kind = PhantomDispellerKind.None;
+        if (!name.Contains("消幻晶", StringComparison.Ordinal) &&
+            !name.Contains("Phantom Dispeller", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (name.Contains('α') || name.Contains("Alpha", StringComparison.OrdinalIgnoreCase))
+            kind = PhantomDispellerKind.Alpha;
+        else if (name.Contains('β') || name.Contains("Beta", StringComparison.OrdinalIgnoreCase))
+            kind = PhantomDispellerKind.Beta;
+        else if (name.Contains('γ') || name.Contains("Gamma", StringComparison.OrdinalIgnoreCase))
+            kind = PhantomDispellerKind.Gamma;
+        return kind != PhantomDispellerKind.None;
     }
 
     private bool HasTreasureGuidance(IPlayerCharacter player)
@@ -1080,7 +1233,8 @@ public sealed unsafe class EventAutomationService : IDisposable
         {
             if (!EnsureTreasureNavigation(candidate.Position,
                     $"魔法罐财宝候选 #{treasureTracker.GetCandidateNumber(candidate):D2}",
-                    allowLargeHeightCorrection: true))
+                    allowLargeHeightCorrection: true,
+                    preferTargetHeight: treasureTracker.IsCandidateCalibrated(candidate.Id)))
             {
                 SkipUnreachableTreasureCandidate(candidate);
                 return;
@@ -1233,7 +1387,8 @@ public sealed unsafe class EventAutomationService : IDisposable
     private bool EnsureTreasureNavigation(
         Vector3 destination,
         string label,
-        bool allowLargeHeightCorrection = false)
+        bool allowLargeHeightCorrection = false,
+        bool preferTargetHeight = false)
     {
         var following = navigationService.ActiveDestination is { } active &&
                         HorizontalDistance(active, destination) <= 3f;
@@ -1242,7 +1397,8 @@ public sealed unsafe class EventAutomationService : IDisposable
         navigationIssued = navigationService.NavigateTo(
             destination,
             label,
-            allowLargeHeightCorrection: allowLargeHeightCorrection);
+            allowLargeHeightCorrection: allowLargeHeightCorrection,
+            preferTargetHeight: preferTargetHeight);
         if (!navigationIssued)
             Status = $"无法前往{label}：{navigationService.Status}";
         return navigationIssued;
@@ -1370,6 +1526,53 @@ public sealed unsafe class EventAutomationService : IDisposable
         return false;
     }
 
+    private bool TryGetPhantomDispellerCounts(out int alpha, out int beta, out int gamma)
+    {
+        alpha = beta = gamma = 0;
+        if (clientState.TerritoryType != PotCandidateCatalog.NorthHornTerritoryId ||
+            alphaDispellerItemId == 0 || betaDispellerItemId == 0 || gammaDispellerItemId == 0)
+            return false;
+
+        var inventoryManager = InventoryManager.Instance();
+        if (inventoryManager == null) return false;
+        var loadedContainers = 0;
+        foreach (var inventoryType in new[]
+                 {
+                     InventoryType.Inventory1,
+                     InventoryType.Inventory2,
+                     InventoryType.Inventory3,
+                     InventoryType.Inventory4
+                 })
+        {
+            var container = inventoryManager->GetInventoryContainer(inventoryType);
+            if (container == null || !container->IsLoaded) continue;
+            loadedContainers++;
+            for (var index = 0; index < container->Size; index++)
+            {
+                var slot = container->GetInventorySlot(index);
+                if (slot == null || slot->Quantity <= 0) continue;
+                if (slot->ItemId == alphaDispellerItemId) alpha += slot->Quantity;
+                else if (slot->ItemId == betaDispellerItemId) beta += slot->Quantity;
+                else if (slot->ItemId == gammaDispellerItemId) gamma += slot->Quantity;
+            }
+        }
+        return loadedContainers == 4;
+    }
+
+    private int PhantomDispellerCount(OccultEventSnapshot item, int alpha, int beta, int gamma)
+    {
+        if (!OccultEventRewardCatalog.TryGetPhantomDispeller(
+                clientState.TerritoryType, item.DataId, out var kind))
+            return int.MaxValue;
+        return kind switch
+        {
+            PhantomDispellerKind.Alpha => alpha,
+            PhantomDispellerKind.Beta => beta,
+            PhantomDispellerKind.Gamma => gamma,
+            _ => int.MaxValue
+        };
+    }
+
     private void Suspend(string reason)
     {
         if (Stage == EventAutomationStage.Suspended) return;
@@ -1484,6 +1687,26 @@ public sealed unsafe class EventAutomationService : IDisposable
         Reset(EventAutomationStage.AwaitingStart,
             $"{statusPrefix}，正在重新接管 {active.Name}", true);
         target = active;
+        targetLastSeenAt = now;
+        awaitingStartedAt = now;
+        return true;
+    }
+
+    private bool TryAdoptCurrentOrNearbyEvent(long now, string statusPrefix)
+    {
+        if (TryAdoptCurrentEvent(now, statusPrefix)) return true;
+        if (objectTable.LocalPlayer is not { } player) return false;
+
+        var nearbyCe = eventTracker.ActiveEvents
+            .Where(item => item.Kind == OccultEventKind.CriticalEngagement && IsSelectable(item))
+            .Where(item => HorizontalDistance(player.Position, item.Position) <= CriticalEngagementWaitingRadius)
+            .OrderBy(item => HorizontalDistance(player.Position, item.Position))
+            .FirstOrDefault();
+        if (nearbyCe.DataId == 0) return false;
+
+        Reset(EventAutomationStage.AwaitingStart,
+            $"{statusPrefix}，已在 {nearbyCe.Name} 的等待区域", true);
+        target = nearbyCe;
         targetLastSeenAt = now;
         awaitingStartedAt = now;
         return true;
@@ -1800,7 +2023,8 @@ public sealed unsafe class EventAutomationService : IDisposable
     {
         if (enemy.Address == nint.Zero || enemy.IsDead || !enemy.IsTargetable || enemy.CurrentHp == 0 ||
             enemy.BattleNpcKind != BattleNpcSubKind.Combatant ||
-            (enemy.StatusFlags & StatusFlags.Hostile) == 0)
+            (enemy.StatusFlags & StatusFlags.Hostile) == 0 ||
+            string.Equals(enemy.Name.ToString().Trim(), CoquettishPotName, StringComparison.Ordinal))
             return false;
         var battleChara = (BattleChara*)(void*)enemy.Address;
         return battleChara != null && battleChara->IsHostile;
