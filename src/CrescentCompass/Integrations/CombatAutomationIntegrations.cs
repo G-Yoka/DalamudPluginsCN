@@ -345,12 +345,31 @@ public sealed class CombatAutomationIntegrations
     private void ApplyBossModMovementDecisionDelay(BossModMovementDecisionDelay delay)
     {
         if (delay == BossModMovementDecisionDelay.UseBossModSetting) return;
+        try
+        {
+            ApplyBossModMovementDecisionDelayCore(delay);
+        }
+        catch (Exception exception)
+        {
+            log.Warning(exception,
+                "无法临时应用 BossmodRebornCN 移动决策延迟；继续使用 BossMod 当前设置。");
+        }
+    }
+
+    private void ApplyBossModMovementDecisionDelayCore(BossModMovementDecisionDelay delay)
+    {
         if (!bossModConfiguration.HasFunction)
-            throw new InvalidOperationException("BossmodRebornCN 不支持移动决策延迟配置接口。");
+        {
+            log.Warning("BossmodRebornCN 不支持读取移动决策延迟；继续使用 BossMod 当前设置。");
+            return;
+        }
 
         var current = bossModConfiguration.InvokeFunc(["AIConfig", "MoveDelay"], false);
         if (current.Count != 1 || !TryParseBossModDouble(current[0], out previousBossModMovementDecisionDelay))
-            throw new InvalidOperationException("无法读取 BossmodRebornCN 当前移动决策延迟。");
+        {
+            log.Warning("无法读取 BossmodRebornCN 当前移动决策延迟；继续使用 BossMod 当前设置。");
+            return;
+        }
 
         var value = delay switch
         {
@@ -360,16 +379,26 @@ public sealed class CombatAutomationIntegrations
             BossModMovementDecisionDelay.Long => 0.5d,
             _ => previousBossModMovementDecisionDelay
         };
-        var result = bossModConfiguration.InvokeFunc(
-            ["AIConfig", "MoveDelay", value.ToString(CultureInfo.InvariantCulture)], false);
-        if (result.Count != 0)
-            throw new InvalidOperationException($"BossmodRebornCN 拒绝设置移动决策延迟：{string.Join("；", result)}");
+
+        // BossMod.Configuration currently cannot convert strings to System.Double. BossMod's own
+        // movedelay command parses the value as a float and assigns it to AIConfig.MoveDelay.
         bossModMovementDecisionDelayChanged = true;
+        if (!TrySetBossModMovementDecisionDelay(value))
+            log.Warning("BossmodRebornCN 未确认移动决策延迟 {Delay} 秒；继续启动战斗接管。", value);
     }
 
     private static bool TryParseBossModDouble(string value, out double result) =>
         double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out result) ||
         double.TryParse(value, NumberStyles.Float, CultureInfo.CurrentCulture, out result);
+
+    private bool TrySetBossModMovementDecisionDelay(double value)
+    {
+        commandManager.ProcessCommand($"/bmrai movedelay {value.ToString(CultureInfo.InvariantCulture)}");
+        if (!bossModConfiguration.HasFunction) return false;
+        var current = bossModConfiguration.InvokeFunc(["AIConfig", "MoveDelay"], false);
+        return current.Count == 1 && TryParseBossModDouble(current[0], out var applied) &&
+               Math.Abs(applied - value) <= 0.0001d;
+    }
 
     public void Disarm()
     {
@@ -421,11 +450,8 @@ public sealed class CombatAutomationIntegrations
         if (bossModMovementDecisionDelayChanged)
             Restore("BossmodRebornCN movement decision delay", () =>
             {
-                var result = bossModConfiguration.InvokeFunc(
-                    ["AIConfig", "MoveDelay",
-                        previousBossModMovementDecisionDelay.ToString(CultureInfo.InvariantCulture)], false);
-                if (result.Count != 0)
-                    throw new InvalidOperationException(string.Join("; ", result));
+                if (!TrySetBossModMovementDecisionDelay(previousBossModMovementDecisionDelay))
+                    throw new InvalidOperationException("BossmodRebornCN 未确认恢复原移动决策延迟。");
             });
         if (bossModPresetChanged)
             Restore("BossmodRebornCN preset", () => bossModSetAiPreset.InvokeAction(previousBossModAiPreset));
