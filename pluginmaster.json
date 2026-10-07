@@ -28,5 +28,34 @@
     ],
     "LastUpdate": 1790868977,
     "Changelog": "正式版 0.2.1.0\n新增：南北岛收益统计，记录本次与累计的事件次数、知见、辅助职业经验、特殊货币、半魂晶、消幻晶及最近收益。\n新增：详情栏页签显示设置、单条路线 JSON 导入导出，以及 BossMod 危险区安全余量和移动决策延迟设置。\n改进：自动流程恢复时接管当前 CE／FATE；BossmodRebornCN 统一负责追击、目标优先级与机制移动；北岛事件按消幻晶需求选择。\n修复：自动接受他人复活、亚凡回后错误暂停、事件结束与返回等待点、北岛跨地图层导航，以及魔法罐宝箱识别、下坐骑、交互和奖励完成判定。"
+  },
+  {
+    "Author": "kawaii, NightmareXIV, Wah；简中本地化：G-Yoka",
+    "Name": "Avarice 简中版",
+    "InternalName": "AvariceCN",
+    "AssemblyVersion": "2.2.0.14",
+    "Punchline": "精确身位追踪、距离指示与战斗反馈。",
+    "Description": "Avarice 非官方简体中文版本。提供精确的背面／侧面身位追踪、距离指示器、身位反馈等功能。",
+    "ApplicableVersion": "any",
+    "DalamudApiLevel": 15,
+    "RepoUrl": "https://github.com/G-Yoka/DalamudPluginsCN",
+    "IconUrl": "https://raw.githubusercontent.com/G-Yoka/DalamudPluginsCN/main/plugins/AvariceCN/images/icon.png",
+    "DownloadLinkInstall": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/AvariceCN-v2.2.0.14/AvariceCN.zip",
+    "DownloadLinkUpdate": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/AvariceCN-v2.2.0.14/AvariceCN.zip",
+    "TestingAssemblyVersion": "2.2.0.14",
+    "TestingDalamudApiLevel": 15,
+    "TestingChangelog": "基于 Avarice 正式版 2.2.0.14，完成设置界面、提示、统计与聊天反馈的本地化。",
+    "DownloadLinkTesting": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/AvariceCN-v2.2.0.14/AvariceCN.zip",
+    "IsHide": false,
+    "IsTestingExclusive": false,
+    "AcceptsFeedback": true,
+    "Tags": [
+      "战斗",
+      "身位",
+      "距离",
+      "汉化"
+    ],
+    "LastUpdate": 1791401055,
+    "Changelog": "基于 Avarice 正式版 2.2.0.14，完成设置界面、提示、统计与聊天反馈的本地化。"
   }
 ]

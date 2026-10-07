@@ -1,0 +1,29 @@
+{
+  "Author": "kawaii, NightmareXIV, Wah；简中本地化：G-Yoka",
+  "Name": "Avarice 简中版",
+  "InternalName": "AvariceCN",
+  "AssemblyVersion": "2.2.0.14",
+  "Punchline": "精确身位追踪、距离指示与战斗反馈。",
+  "Description": "Avarice 非官方简体中文版本。提供精确的背面／侧面身位追踪、距离指示器、身位反馈等功能。",
+  "ApplicableVersion": "any",
+  "DalamudApiLevel": 15,
+  "RepoUrl": "https://github.com/G-Yoka/DalamudPluginsCN",
+  "IconUrl": "https://raw.githubusercontent.com/G-Yoka/DalamudPluginsCN/main/plugins/AvariceCN/images/icon.png",
+  "DownloadLinkInstall": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/AvariceCN-v2.2.0.14/AvariceCN.zip",
+  "DownloadLinkUpdate": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/AvariceCN-v2.2.0.14/AvariceCN.zip",
+  "TestingAssemblyVersion": "2.2.0.14",
+  "TestingDalamudApiLevel": 15,
+  "TestingChangelog": "基于 Avarice 正式版 2.2.0.14，完成设置界面、提示、统计与聊天反馈的本地化。",
+  "DownloadLinkTesting": "https://github.com/G-Yoka/DalamudPluginsCN/releases/download/AvariceCN-v2.2.0.14/AvariceCN.zip",
+  "IsHide": false,
+  "IsTestingExclusive": false,
+  "AcceptsFeedback": true,
+  "Tags": [
+    "战斗",
+    "身位",
+    "距离",
+    "汉化"
+  ],
+  "LastUpdate": 1791401055,
+  "Changelog": "基于 Avarice 正式版 2.2.0.14，完成设置界面、提示、统计与聊天反馈的本地化。"
+}

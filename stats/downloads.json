@@ -4,5 +4,11 @@
     "tagPrefix": "CrescentCompass-v",
     "assetName": "CrescentCompass.zip",
     "updatedAt": "2026-10-07T06:03:00Z"
+  },
+  "AvariceCN": {
+    "downloadCount": 0,
+    "tagPrefix": "AvariceCN-v",
+    "assetName": "AvariceCN.zip",
+    "updatedAt": null
   }
 }

@@ -27,12 +27,17 @@ jobs:
         run: |
           set -euo pipefail
 
-          total="$({
+          crescent_total="$({
             gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
               --jq '.[] | select(.tag_name | startswith("CrescentCompass-v")) | .assets[] | select(.name == "CrescentCompass.zip") | .download_count'
           } | awk '{ sum += $1 } END { print sum + 0 }')"
 
-          TOTAL="$total" python3 - <<'PY'
+          avarice_total="$({
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq '.[] | select(.tag_name | startswith("AvariceCN-v")) | .assets[] | select(.name == "AvariceCN.zip") | .download_count'
+          } | awk '{ sum += $1 } END { print sum + 0 }')"
+
+          CRESCENT_TOTAL="$crescent_total" AVARICE_TOTAL="$avarice_total" python3 - <<'PY'
           import datetime
           import json
           import os
@@ -42,13 +47,20 @@ jobs:
           with open(path, encoding="utf-8") as stream:
               data = json.load(stream)
 
-          entry = data["CrescentCompass"]
-          total = int(os.environ["TOTAL"])
-          changed = entry["downloadCount"] != total
-          if changed:
-              entry["downloadCount"] = total
-              entry["updatedAt"] = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+          totals = {
+              "CrescentCompass": int(os.environ["CRESCENT_TOTAL"]),
+              "AvariceCN": int(os.environ["AVARICE_TOTAL"]),
+          }
+          changed = False
+          updated_at = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+          for internal_name, total in totals.items():
+              entry = data[internal_name]
+              if entry["downloadCount"] != total:
+                  entry["downloadCount"] = total
+                  entry["updatedAt"] = updated_at
+                  changed = True
 
+          if changed:
               with open(path, "w", encoding="utf-8", newline="\n") as stream:
                   json.dump(data, stream, ensure_ascii=False, indent=2)
                   stream.write("\n")
@@ -57,10 +69,12 @@ jobs:
           with open(readme_path, encoding="utf-8") as stream:
               readme = stream.read()
 
-          pattern = re.compile(r"(<!-- download-count:CrescentCompass -->)\d+(<!-- /download-count:CrescentCompass -->)")
-          updated_readme, replacements = pattern.subn(rf"\g<1>{total}\g<2>", readme)
-          if replacements != 1:
-              raise RuntimeError("README download-count marker is missing or duplicated")
+          updated_readme = readme
+          for internal_name, total in totals.items():
+              pattern = re.compile(rf"(<!-- download-count:{internal_name} -->)\d+(<!-- /download-count:{internal_name} -->)")
+              updated_readme, replacements = pattern.subn(rf"\g<1>{total}\g<2>", updated_readme)
+              if replacements != 1:
+                  raise RuntimeError(f"README download-count marker for {internal_name} is missing or duplicated")
           if updated_readme != readme:
               changed = True
               with open(readme_path, "w", encoding="utf-8", newline="\n") as stream:

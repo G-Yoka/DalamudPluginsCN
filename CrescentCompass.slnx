@@ -1,4 +1,6 @@
 <Solution>
   <Project Path="src/CrescentCompass.Core/CrescentCompass.Core.csproj" />
   <Project Path="src/CrescentCompass/CrescentCompass.csproj" />
+  <Project Path="src/PunishLib/PunishLib/PunishLib.csproj" />
+  <Project Path="src/AvariceCN/AvariceCN.csproj" />
 </Solution>

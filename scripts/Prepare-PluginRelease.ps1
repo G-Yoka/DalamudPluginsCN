@@ -12,6 +12,7 @@ $repositoryRoot = Split-Path -Parent $PSScriptRoot
 
 $dotnetCandidates = @(
     (Get-Command dotnet -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source),
+    $(if ($env:DOTNET_ROOT) { Join-Path $env:DOTNET_ROOT 'dotnet.exe' }),
     (Join-Path $env:USERPROFILE '.dotnet/dotnet.exe'),
     'E:/01_Dev/SDKs/dotnet10/dotnet.exe'
 ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
@@ -28,6 +29,12 @@ $plugins = @{
         TestProject = 'tests/CrescentCompass.Core.Tests/CrescentCompass.Core.Tests.csproj'
         PackedManifest = 'src/CrescentCompass/bin/Release/CrescentCompass/CrescentCompass.json'
         PackedZip = 'src/CrescentCompass/bin/Release/CrescentCompass/latest.zip'
+    }
+    AvariceCN = @{
+        Project = 'src/AvariceCN/AvariceCN.csproj'
+        TestProject = 'tests/AvariceCN.Tests/AvariceCN.Tests.csproj'
+        PackedManifest = 'artifacts/build/AvariceCN/Release/AvariceCN/AvariceCN.json'
+        PackedZip = 'artifacts/build/AvariceCN/Release/AvariceCN/latest.zip'
     }
 }
 
