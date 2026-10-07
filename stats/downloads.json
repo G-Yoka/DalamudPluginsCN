@@ -1,14 +1,14 @@
 {
   "CrescentCompass": {
-    "downloadCount": 276,
+    "downloadCount": 279,
     "tagPrefix": "CrescentCompass-v",
     "assetName": "CrescentCompass.zip",
-    "updatedAt": "2026-10-07T06:03:00Z"
+    "updatedAt": "2026-10-07T23:06:45Z"
   },
   "AvariceCN": {
-    "downloadCount": 0,
+    "downloadCount": 2,
     "tagPrefix": "AvariceCN-v",
     "assetName": "AvariceCN.zip",
-    "updatedAt": null
+    "updatedAt": "2026-10-07T23:06:45Z"
   }
 }
