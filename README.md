@@ -29,7 +29,7 @@ https://raw.githubusercontent.com/G-Yoka/DalamudPluginsCN/main/pluginmaster.json
       <td nowrap><a href="plugins/CrescentCompass/README.md">新月罗盘</a></td>
       <td nowrap><code>CrescentCompass</code></td>
       <td nowrap>新月岛寻宝、FATE／CE 提醒、自动参与与地图导航</td>
-      <td nowrap align="right"><!-- download-count:CrescentCompass -->279<!-- /download-count:CrescentCompass --></td>
+      <td nowrap align="right"><!-- download-count:CrescentCompass -->284<!-- /download-count:CrescentCompass --></td>
     </tr>
     <tr>
       <td nowrap><a href="plugins/AvariceCN/README.md">Avarice 简中版</a></td>
