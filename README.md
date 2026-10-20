@@ -35,7 +35,7 @@ https://raw.githubusercontent.com/G-Yoka/DalamudPluginsCN/main/pluginmaster.json
       <td nowrap><a href="plugins/AvariceCN/README.md">Avarice 简中版</a></td>
       <td nowrap><code>AvariceCN</code></td>
       <td nowrap>精确身位追踪、距离指示与战斗反馈</td>
-      <td nowrap align="right"><!-- download-count:AvariceCN -->12<!-- /download-count:AvariceCN --></td>
+      <td nowrap align="right"><!-- download-count:AvariceCN -->13<!-- /download-count:AvariceCN --></td>
     </tr>
   </tbody>
 </table>
